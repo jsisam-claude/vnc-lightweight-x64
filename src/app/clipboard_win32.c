@@ -41,4 +41,37 @@ void clipboard_from_server(ViewerApp *app, const char *text, unsigned len)
     }
     if (!placed)
         GlobalFree(h);
+    else
+        app->ignore_clip_update = TRUE; /* suppress the echo back to the server */
+}
+
+/* Read the local clipboard (Unicode text) and forward it to the server as a
+ * cut-text command. Text is UTF-8 encoded and capped by the IPC layer. */
+void clipboard_to_server(ViewerApp *app)
+{
+    if (app->view_only)
+        return;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
+        return;
+    if (!OpenClipboard(app->hwnd))
+        return;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    if (h) {
+        const wchar_t *w = (const wchar_t *)GlobalLock(h);
+        if (w) {
+            int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+            if (need > 1 && need <= (1 << 20)) {
+                char *utf8 = malloc((size_t)need);
+                if (utf8) {
+                    WideCharToMultiByte(CP_UTF8, 0, w, -1, utf8, need, NULL, NULL);
+                    /* -1 to drop the NUL terminator from the wire length. */
+                    vnc_channel_send(&app->ch, VNC_CMD_CUT_TEXT, utf8,
+                                     (uint32_t)(need - 1));
+                    free(utf8);
+                }
+            }
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
 }

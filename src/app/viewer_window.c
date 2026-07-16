@@ -36,8 +36,36 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE: {
         CREATESTRUCTW *cs = (CREATESTRUCTW *)lp;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        AddClipboardFormatListener(hwnd); /* local clipboard -> server */
         return 0;
     }
+
+    case WM_CLIPBOARDUPDATE:
+        /* Ignore the echo from our own SetClipboardData (server text). */
+        if (app->ignore_clip_update)
+            app->ignore_clip_update = FALSE;
+        else if (GetClipboardOwner() != hwnd)
+            clipboard_to_server(app);
+        return 0;
+
+    case WM_APP_CURSOR: {
+        uint8_t *blob = (uint8_t *)lp;
+        if (blob) {
+            /* blob = [u32 len][payload] marshaled by the reader thread. */
+            uint32_t len;
+            memcpy(&len, blob, 4);
+            viewer_set_cursor(app, blob + 4, len);
+            free(blob);
+        }
+        return 0;
+    }
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT && app->remote_cursor) {
+            SetCursor(app->remote_cursor);
+            return TRUE;
+        }
+        break;
     case WM_APP_RESIZE:
         setup_dib(app, (int)wp, (int)lp);
         InvalidateRect(hwnd, NULL, FALSE);
@@ -139,10 +167,73 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        RemoveClipboardFormatListener(hwnd);
+        if (app->remote_cursor) DestroyCursor(app->remote_cursor);
         PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* Build a Windows cursor from an EVT_CURSOR blob and make it current. The blob
+ * is a vnc_ipc_cursor header followed by width*height BGRA pixels (alpha carries
+ * the mask). All fields are re-validated here (untrusted worker). */
+void viewer_set_cursor(ViewerApp *app, const uint8_t *blob, unsigned len)
+{
+    if (len < sizeof(vnc_ipc_cursor))
+        return;
+    vnc_ipc_cursor hdr;
+    memcpy(&hdr, blob, sizeof(hdr));
+    unsigned w = hdr.width, h = hdr.height;
+    if (w == 0 || h == 0 || w > 256 || h > 256)
+        return;
+    size_t need = (size_t)w * h * 4;
+    if (len - sizeof(vnc_ipc_cursor) < need)
+        return;
+    const uint8_t *bgra = blob + sizeof(vnc_ipc_cursor);
+
+    /* 32bpp top-down color bitmap holding the ARGB pixels. */
+    BITMAPINFO bi;
+    ZeroMemory(&bi, sizeof(bi));
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = (LONG)w;
+    bi.bmiHeader.biHeight = -(LONG)h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    void *bits = NULL;
+    HDC hdc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    if (!color)
+        return;
+    memcpy(bits, bgra, need);
+
+    /* AND mask must exist and be all-zero so the 32bpp color alpha governs
+     * transparency (CreateBitmap with NULL leaves bits undefined, so zero it). */
+    size_t mask_stride = (((size_t)w + 15) / 16) * 2; /* 1bpp, WORD-aligned rows */
+    uint8_t *mask_bits = calloc(mask_stride * h, 1);
+    HBITMAP mask = mask_bits ? CreateBitmap((int)w, (int)h, 1, 1, mask_bits) : NULL;
+    free(mask_bits);
+    if (!mask) { DeleteObject(color); return; }
+
+    ICONINFO ii = {0};
+    ii.fIcon = FALSE; /* cursor */
+    ii.xHotspot = (DWORD)(hdr.xhot < 0 ? 0 : hdr.xhot);
+    ii.yHotspot = (DWORD)(hdr.yhot < 0 ? 0 : hdr.yhot);
+    ii.hbmMask = mask;
+    ii.hbmColor = color;
+    HCURSOR cur = (HCURSOR)CreateIconIndirect(&ii);
+    DeleteObject(color);
+    DeleteObject(mask);
+    if (!cur)
+        return;
+
+    if (app->remote_cursor)
+        DestroyCursor(app->remote_cursor);
+    app->remote_cursor = cur;
+    SetCursor(cur);
 }
 
 ATOM viewer_register_class(HINSTANCE hinst)
@@ -203,6 +294,12 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
             uint8_t *blob = malloc(4 + (size_t)len);
             if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
                 PostMessageW(app->hwnd, WM_APP_CUTTEXT, 0, (LPARAM)blob); }
+            break;
+        }
+        case VNC_EVT_CURSOR: {
+            uint8_t *blob = malloc(4 + (size_t)len);
+            if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
+                PostMessageW(app->hwnd, WM_APP_CURSOR, 0, (LPARAM)blob); }
             break;
         }
         case VNC_EVT_PASSWORD_REQ:

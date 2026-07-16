@@ -10,6 +10,10 @@
 /* Clipboard text from an untrusted server is capped before it reaches the UI. */
 #define VNC_MAX_CUT_TEXT (1u << 20) /* 1 MiB */
 
+/* Client-side cursors above this in either dimension are ignored (matches the
+ * EVT_CURSOR IPC cap; also bounds work per cursor update). */
+#define VNC_MAX_CURSOR_DIM 256
+
 struct vnc_client {
     rfbClient *rfb;
     vnc_client_delegate delegate;
@@ -111,6 +115,29 @@ static void cb_got_cut_text(rfbClient *rfb, const char *text, int textlen)
         c->delegate.on_cut_text(c->delegate.user, text, len);
 }
 
+static void cb_got_cut_text_utf8(rfbClient *rfb, const char *text, int textlen)
+{
+    /* Extended-Clipboard (UTF-8) path; same capping/forwarding as classic. */
+    cb_got_cut_text(rfb, text, textlen);
+}
+
+static void cb_got_cursor(rfbClient *rfb, int xhot, int yhot,
+                          int width, int height, int bytesPerPixel)
+{
+    vnc_client *c = self_of(rfb);
+    if (!c->delegate.on_cursor)
+        return;
+    if (width <= 0 || height <= 0 ||
+        width > VNC_MAX_CURSOR_DIM || height > VNC_MAX_CURSOR_DIM)
+        return;
+    if (bytesPerPixel != 4)
+        return; /* we request 32bpp; ignore anything else */
+    if (!rfb->rcSource)
+        return;
+    c->delegate.on_cursor(c->delegate.user, xhot, yhot, width, height,
+                          rfb->rcSource, rfb->rcMask);
+}
+
 static char *cb_get_password(rfbClient *rfb)
 {
     vnc_client *c = self_of(rfb);
@@ -156,6 +183,11 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
     c->rfb->MallocFrameBuffer = cb_malloc_framebuffer;
     c->rfb->GotFrameBufferUpdate = cb_got_update;
     c->rfb->GotXCutText = cb_got_cut_text;
+    /* Setting GotXCutTextUTF8 is what makes libvncclient negotiate the Extended
+     * Clipboard (what QEMU speaks). */
+    c->rfb->GotXCutTextUTF8 = cb_got_cut_text_utf8;
+    c->rfb->GotCursorShape = cb_got_cursor;
+    c->rfb->appData.useRemoteCursor = TRUE; /* request cursor pseudo-encodings */
     c->rfb->GetPassword = cb_get_password;
     c->rfb->canHandleNewFBSize = TRUE;
     return c;
@@ -236,8 +268,10 @@ bool vnc_client_send_cut_text(vnc_client *c, const char *text, size_t len)
         return false;
     if (len > VNC_MAX_CUT_TEXT)
         len = VNC_MAX_CUT_TEXT;
-    /* libvncclient takes a non-const char*; it does not modify the buffer. */
-    return SendClientCutText(c->rfb, (char *)text, (int)len) == TRUE;
+    /* Prefer the Extended-Clipboard (UTF-8) path; libvncclient falls back to
+     * classic cut text automatically if the server lacks the capability.
+     * libvncclient takes a non-const char*; it does not modify the buffer. */
+    return SendClientCutTextUTF8(c->rfb, (char *)text, (int)len) == TRUE;
 }
 
 vnc_handle vnc_client_socket(const vnc_client *c)

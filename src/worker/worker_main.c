@@ -94,6 +94,30 @@ static void w_on_cut_text(void *user, const char *text, size_t len)
     vnc_channel_send(&w->ch, VNC_EVT_CUT_TEXT, text, (uint32_t)len);
 }
 
+static void w_on_cursor(void *user, int xhot, int yhot, int width, int height,
+                        const uint8_t *bgra, const uint8_t *mask)
+{
+    worker *w = user;
+    size_t npix = (size_t)width * (size_t)height;
+    if (npix == 0 || npix > 256u * 256u)
+        return;
+
+    /* Fold the 1-byte mask into the alpha channel so the UI can build a single
+     * 32bpp ARGB cursor. rcSource is B,G,R,X on our LE targets. */
+    uint8_t *px = malloc(npix * 4);
+    if (!px)
+        return;
+    memcpy(px, bgra, npix * 4);
+    for (size_t i = 0; i < npix; i++)
+        px[i * 4 + 3] = (mask && mask[i]) ? 0xFF : 0x00;
+
+    vnc_ipc_cursor hdr = { (int16_t)xhot, (int16_t)yhot,
+                           (uint16_t)width, (uint16_t)height };
+    vnc_channel_send2(&w->ch, VNC_EVT_CURSOR, &hdr, sizeof(hdr),
+                      px, (uint32_t)(npix * 4));
+    free(px);
+}
+
 static void w_on_log(void *user, vnc_log_level level, const char *msg)
 {
     worker *w = user;
@@ -202,6 +226,7 @@ static int worker_run(worker *w, const char *host, int port,
         .on_framebuffer_update = w_on_update,
         .on_desktop_resize = w_on_resize,
         .on_cut_text = w_on_cut_text,
+        .on_cursor = w_on_cursor,
         .on_log = w_on_log,
         .get_password = w_get_password,
     };

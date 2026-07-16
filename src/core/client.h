@@ -44,8 +44,15 @@ typedef struct {
     void (*on_desktop_resize)(void *user, int width, int height);
 
     /* Server cut text (clipboard). `text` is not NUL-guaranteed; `len` is the
-     * authoritative length and is already capped by the core. */
+     * authoritative length and is already capped by the core. Fires for both
+     * classic and Extended-Clipboard (UTF-8) server text. */
     void (*on_cut_text)(void *user, const char *text, size_t len);
+
+    /* Server cursor shape (client-side cursor). `bgra` is width*height 32bpp
+     * pixels; `mask` is width*height bytes (non-zero = opaque). Both owned by
+     * the core, valid only during the call. Dimensions are already capped. */
+    void (*on_cursor)(void *user, int xhot, int yhot, int width, int height,
+                      const uint8_t *bgra, const uint8_t *mask);
 
     /* Structured log line. Never carries secrets. */
     void (*on_log)(void *user, vnc_log_level level, const char *msg);

@@ -27,6 +27,7 @@
 #define WM_APP_CUTTEXT  (WM_APP + 3) /* lParam -> heap {u32 len; bytes} (UI frees) */
 #define WM_APP_STATUS   (WM_APP + 4) /* wParam=status code */
 #define WM_APP_PWREQ    (WM_APP + 5) /* worker needs a password */
+#define WM_APP_CURSOR   (WM_APP + 6) /* lParam -> heap cursor blob (UI frees) */
 
 typedef struct {
     /* IPC to worker */
@@ -41,6 +42,8 @@ typedef struct {
     HWND        hwnd;
     int         fb_width, fb_height;   /* current framebuffer dimensions */
     BITMAPINFO  bmi;                   /* describes the shm pixels as a DIB */
+    HCURSOR     remote_cursor;         /* current server-supplied cursor */
+    BOOL        ignore_clip_update;    /* suppress echo of server-set clipboard */
 
     /* Connection parameters */
     wchar_t     host[256];
@@ -58,8 +61,13 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg); /* pumps worker events */
 void  input_key(ViewerApp *app, WPARAM vk, LPARAM lparam, BOOL down);
 void  input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam);
 
-/* clipboard_win32.c — server cut-text -> local clipboard (expanded in M3). */
+/* clipboard_win32.c — both directions. */
 void  clipboard_from_server(ViewerApp *app, const char *text, unsigned len);
+void  clipboard_to_server(ViewerApp *app); /* read local clipboard -> worker */
+
+/* viewer_window.c — build + apply a server-supplied cursor from an EVT_CURSOR
+ * blob (vnc_ipc_cursor header followed by BGRA pixels). */
+void  viewer_set_cursor(ViewerApp *app, const uint8_t *blob, unsigned len);
 
 /* main_win32.c — prompt for a password and send it to the worker. */
 void  app_request_password(ViewerApp *app);
