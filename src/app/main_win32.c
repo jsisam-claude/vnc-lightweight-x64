@@ -140,6 +140,50 @@ void app_request_password(ViewerApp *app)
     SecureZeroMemory(g_pw_buf, sizeof(g_pw_buf));
 }
 
+/* ---- session lifecycle (startup + reconnect) ----------------------------- */
+
+BOOL app_start_session(ViewerApp *app)
+{
+    char host_utf8[256];
+    WideCharToMultiByte(CP_UTF8, 0, app->host, -1, host_utf8, sizeof(host_utf8),
+                        NULL, NULL);
+    WorkerSpawnParams sp = {
+        .host = host_utf8,
+        .port = app->port,
+        .encodings = NULL,
+        .view_only = app->view_only,
+        .audio = app->want_audio,
+        .ca_file = app->ca_file[0] ? app->ca_file : NULL,
+        .shm_name = app->shm_name,
+        .shm_bytes = app->shm_bytes,
+    };
+    if (!sandbox_spawn_worker(app, &sp))
+        return FALSE;
+    app->reader_thread = CreateThread(NULL, 0, viewer_reader_thread, app, 0, NULL);
+    return app->reader_thread != NULL;
+}
+
+void app_stop_session(ViewerApp *app)
+{
+    if (app->ch.wr)
+        vnc_channel_send(&app->ch, VNC_CMD_SHUTDOWN, NULL, 0);
+    sandbox_cleanup(app); /* closes channel, waits for / terminates worker */
+    if (app->reader_thread) {
+        WaitForSingleObject(app->reader_thread, 1000);
+        CloseHandle(app->reader_thread);
+        app->reader_thread = NULL;
+    }
+    /* Reader thread joined: drop any stale events it queued (freeing payloads)
+     * so they cannot leak or disturb a reconnected session. */
+    viewer_drain_messages(app->hwnd);
+    if (app->audio) {
+        waveout_destroy(app->audio);
+        app->audio = NULL;
+    }
+    app->fb_width = app->fb_height = 0;
+    app->connected = FALSE;
+}
+
 /* ---- entry point --------------------------------------------------------- */
 
 static void parse_target(const wchar_t *arg, ViewerApp *app)
@@ -171,11 +215,18 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             g_app.view_only = TRUE;
         else if (!wcscmp(argv[i], L"--audio"))
             g_app.want_audio = TRUE;
+        else if (!wcscmp(argv[i], L"--fullscreen"))
+            g_app.want_fullscreen = TRUE;
+        else if (!wcscmp(argv[i], L"--stretch"))
+            g_app.scale_mode = 1;
+        else if (!wcscmp(argv[i], L"--scale-1to1"))
+            g_app.scale_mode = 2;
         else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc)
             WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
                                 sizeof(g_app.ca_file), NULL, NULL);
     }
     LocalFree(argv);
+    g_app.hinst = hinst; /* scale_mode defaults to 0 = fit (aspect-preserving) */
 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -195,21 +246,11 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
         return 1;
     }
 
-    /* Spawn the sandboxed worker. host/encodings passed as UTF-8. */
-    char host_utf8[256];
-    WideCharToMultiByte(CP_UTF8, 0, g_app.host, -1, host_utf8, sizeof(host_utf8),
-                        NULL, NULL);
-    WorkerSpawnParams sp = {
-        .host = host_utf8,
-        .port = g_app.port,
-        .encodings = NULL, /* worker default (M3 lets the UI choose) */
-        .view_only = g_app.view_only,
-        .audio = g_app.want_audio,
-        .ca_file = g_app.ca_file[0] ? g_app.ca_file : NULL,
-        .shm_name = g_app.shm_name,
-        .shm_bytes = g_app.shm_bytes,
-    };
-    if (!sandbox_spawn_worker(&g_app, &sp)) {
+    if (g_app.want_fullscreen)
+        SendMessageW(g_app.hwnd, WM_KEYDOWN, VK_F11, 0);
+
+    /* Spawn the sandboxed worker + reader thread. */
+    if (!app_start_session(&g_app)) {
         MessageBoxW(NULL,
             L"Failed to start the sandboxed connection worker.\n"
             L"The client will not run the RFB parser outside the sandbox.",
@@ -217,25 +258,13 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
         return 1;
     }
 
-    g_app.reader_thread = CreateThread(NULL, 0, viewer_reader_thread, &g_app,
-                                       0, NULL);
-
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
-    /* Ask the worker to exit, then tear the sandbox down. */
-    vnc_channel_send(&g_app.ch, VNC_CMD_SHUTDOWN, NULL, 0);
-    sandbox_cleanup(&g_app);
-    if (g_app.reader_thread) {
-        WaitForSingleObject(g_app.reader_thread, 1000);
-        CloseHandle(g_app.reader_thread);
-    }
-    /* Reader thread has exited; safe to tear down its audio sink. */
-    if (g_app.audio)
-        waveout_destroy(g_app.audio);
+    app_stop_session(&g_app);
     vnc_shm_close(g_app.shm);
     WSACleanup();
     return 0;

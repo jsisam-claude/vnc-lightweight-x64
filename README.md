@@ -22,7 +22,9 @@ the vendored protocol core builds and is proven against real servers.
       Path + certificate verification verified in-container against QEMU via the
       GnuTLS reference backend; the SChannel product backend is reviewed and
       pending Windows-host validation.
-- [ ] **M7** — polish (fullscreen, scaling, reconnect)
+- [x] **M7** — polish: aspect-preserving scaling (+ `--stretch` / `--scale-1to1`),
+      fullscreen toggle (F11 / Ctrl+Alt+F, `--fullscreen`), reconnect-on-disconnect
+      prompt (Windows UI; pending Windows-host validation)
 - [ ] **M8** — file drag-drop (TightVNC file-transfer extension, server-gated)
 
 ## What it is / isn't

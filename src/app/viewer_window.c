@@ -18,6 +18,56 @@
 
 static const wchar_t *kClassName = L"VncLightweightViewer";
 
+/* Compute where the framebuffer image is drawn within the client area, honoring
+ * the scale mode. Used by both painting and mouse-coordinate mapping so they
+ * always agree. */
+static RECT compute_dest_rect(ViewerApp *app, int cw, int ch)
+{
+    RECT d = { 0, 0, cw, ch };
+    if (app->fb_width <= 0 || app->fb_height <= 0)
+        return d;
+    if (app->scale_mode == 1) /* stretch: fill the whole client area */
+        return d;
+    if (app->scale_mode == 2) { /* 1:1, centered */
+        int w = app->fb_width, h = app->fb_height;
+        d.left = (cw - w) / 2; d.top = (ch - h) / 2;
+        d.right = d.left + w; d.bottom = d.top + h;
+        return d;
+    }
+    /* fit: preserve aspect ratio, letterbox. */
+    double sx = (double)cw / app->fb_width, sy = (double)ch / app->fb_height;
+    double s = sx < sy ? sx : sy;
+    int w = (int)(app->fb_width * s + 0.5), h = (int)(app->fb_height * s + 0.5);
+    d.left = (cw - w) / 2; d.top = (ch - h) / 2;
+    d.right = d.left + w; d.bottom = d.top + h;
+    return d;
+}
+
+static void toggle_fullscreen(ViewerApp *app)
+{
+    HWND hwnd = app->hwnd;
+    if (!app->fullscreen) {
+        app->windowed_style = GetWindowLongW(hwnd, GWL_STYLE);
+        GetWindowRect(hwnd, &app->windowed_rect);
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowLongW(hwnd, GWL_STYLE, app->windowed_style & ~(WS_OVERLAPPEDWINDOW));
+        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        app->fullscreen = TRUE;
+    } else {
+        SetWindowLongW(hwnd, GWL_STYLE, app->windowed_style);
+        SetWindowPos(hwnd, NULL, app->windowed_rect.left, app->windowed_rect.top,
+                     app->windowed_rect.right - app->windowed_rect.left,
+                     app->windowed_rect.bottom - app->windowed_rect.top,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
+        app->fullscreen = FALSE;
+    }
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
 static void setup_dib(ViewerApp *app, int w, int h)
 {
     ZeroMemory(&app->bmi, sizeof(app->bmi));
@@ -124,25 +174,48 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_APP_STATUS:
-        if ((int)wp == VNC_STATUS_CONNECTED) app->connected = TRUE;
-        else if ((int)wp == VNC_STATUS_DISCONNECTED ||
-                 (int)wp == VNC_STATUS_CONNECT_FAILED ||
-                 (int)wp == VNC_STATUS_AUTH_FAILED) {
+        if ((int)wp == VNC_STATUS_CONNECTED) {
+            app->connected = TRUE;
+        } else if ((int)wp == VNC_STATUS_DISCONNECTED ||
+                   (int)wp == VNC_STATUS_CONNECT_FAILED ||
+                   (int)wp == VNC_STATUS_AUTH_FAILED) {
+            BOOL was_connected = app->connected;
             app->connected = FALSE;
-            /* M7 adds a reconnect prompt; for now close on disconnect. */
-            DestroyWindow(hwnd);
+            const wchar_t *why =
+                (int)wp == VNC_STATUS_AUTH_FAILED ? L"Authentication failed." :
+                (int)wp == VNC_STATUS_CONNECT_FAILED ? L"Could not connect to the server." :
+                L"Disconnected from the server.";
+            wchar_t prompt[256];
+            _snwprintf_s(prompt, 256, _TRUNCATE, L"%s\n\nReconnect?", why);
+            /* Tear the old session down (the reader thread that posted this has
+             * already exited), then offer to reconnect. */
+            app_stop_session(app);
+            if (MessageBoxW(hwnd, prompt, L"VNC Lightweight",
+                            MB_YESNO | MB_ICONWARNING) == IDYES &&
+                app_start_session(app)) {
+                (void)was_connected;
+            } else {
+                DestroyWindow(hwnd);
+            }
         }
         return 0;
 
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
         if (app->fb_width > 0 && app->fb_height > 0 && app->shm) {
-            RECT rc; GetClientRect(hwnd, &rc);
-            int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+            RECT d = compute_dest_rect(app, cw, ch);
+            /* Letterbox margins in black (only when the image doesn't fill). */
+            if (d.left > 0 || d.top > 0 || d.right < cw || d.bottom < ch) {
+                HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+                RECT full = { 0, 0, cw, ch };
+                FillRect(hdc, &full, black);
+            }
             SetStretchBltMode(hdc, HALFTONE);
             SetBrushOrgEx(hdc, 0, 0, NULL);
-            StretchDIBits(hdc, 0, 0, cw, ch,
+            StretchDIBits(hdc, d.left, d.top, d.right - d.left, d.bottom - d.top,
                           0, 0, app->fb_width, app->fb_height,
                           vnc_shm_pixels(app->shm), &app->bmi,
                           DIB_RGB_COLORS, SRCCOPY);
@@ -155,6 +228,10 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 1; /* we paint every pixel; skip flicker */
 
     case WM_KEYDOWN: case WM_SYSKEYDOWN:
+        if (wp == VK_F11) { toggle_fullscreen(app); return 0; }
+        /* Ctrl+Alt+F toggles fullscreen too (F11 may be grabbed by the guest). */
+        if (wp == 'F' && (GetKeyState(VK_CONTROL) & 0x8000) &&
+            (GetKeyState(VK_MENU) & 0x8000)) { toggle_fullscreen(app); return 0; }
         input_key(app, wp, lp, TRUE);
         return 0;
     case WM_KEYUP: case WM_SYSKEYUP:
@@ -167,12 +244,16 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-        /* Map window coords back to framebuffer coords (we stretch to fit). */
+        /* Map window coords to framebuffer coords through the same dest rect the
+         * paint uses, so letterbox/1:1 modes map correctly. */
         RECT rc; GetClientRect(hwnd, &rc);
-        int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-        if (cw > 0 && ch > 0 && app->fb_width > 0) {
-            x = (int)((int64_t)x * app->fb_width / cw);
-            y = (int)((int64_t)y * app->fb_height / ch);
+        RECT d = compute_dest_rect(app, rc.right - rc.left, rc.bottom - rc.top);
+        int dw = d.right - d.left, dh = d.bottom - d.top;
+        if (dw > 0 && dh > 0 && app->fb_width > 0) {
+            x = (int)((int64_t)(x - d.left) * app->fb_width / dw);
+            y = (int)((int64_t)(y - d.top) * app->fb_height / dh);
+            if (x < 0) x = 0; if (x >= app->fb_width) x = app->fb_width - 1;
+            if (y < 0) y = 0; if (y >= app->fb_height) y = app->fb_height - 1;
         }
         input_pointer(app, x, y, msg, wp);
         return 0;
@@ -272,6 +353,19 @@ HWND viewer_create_window(ViewerApp *app, HINSTANCE hinst)
         NULL, NULL, hinst, app);
     app->hwnd = hwnd;
     return hwnd;
+}
+
+/* Remove any queued WM_APP_* messages (freeing heap payloads) so stale events
+ * from a torn-down session cannot leak or disturb a reconnected one. Call only
+ * after the posting reader thread has been joined. */
+void viewer_drain_messages(HWND hwnd)
+{
+    MSG m;
+    while (PeekMessageW(&m, hwnd, WM_APP_RESIZE, WM_APP_LED, PM_REMOVE)) {
+        if ((m.message == WM_APP_UPDATE || m.message == WM_APP_CUTTEXT ||
+             m.message == WM_APP_CURSOR) && m.lParam)
+            free((void *)m.lParam);
+    }
 }
 
 /* Reader thread: consume worker events and marshal them to the UI thread. */

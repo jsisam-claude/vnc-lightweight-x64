@@ -48,6 +48,14 @@ typedef struct {
     struct waveout_sink *audio;        /* QEMU audio playback (reader-thread owned) */
     BOOL        want_audio;            /* user opted into audio */
 
+    /* Presentation options (M7). */
+    int         scale_mode;            /* 0=fit (aspect), 1=stretch, 2=1:1 */
+    BOOL        fullscreen;
+    BOOL        want_fullscreen;       /* requested at startup */
+    LONG        windowed_style;        /* saved to restore from fullscreen */
+    RECT        windowed_rect;
+    HINSTANCE   hinst;
+
     /* Connection parameters */
     wchar_t     host[256];
     int         port;
@@ -60,6 +68,7 @@ typedef struct {
 ATOM  viewer_register_class(HINSTANCE hinst);
 HWND  viewer_create_window(ViewerApp *app, HINSTANCE hinst);
 DWORD WINAPI viewer_reader_thread(LPVOID arg); /* pumps worker events */
+void  viewer_drain_messages(HWND hwnd);        /* drop stale WM_APP_* on teardown */
 
 /* input_win32.c — translate + forward input to the worker. */
 void  input_key(ViewerApp *app, WPARAM vk, LPARAM lparam, BOOL down);
@@ -75,6 +84,11 @@ void  viewer_set_cursor(ViewerApp *app, const uint8_t *blob, unsigned len);
 
 /* main_win32.c — prompt for a password and send it to the worker. */
 void  app_request_password(ViewerApp *app);
+
+/* Session lifecycle (main_win32.c): spawn/tear-down the sandboxed worker +
+ * reader thread. Used at startup and for reconnect. */
+BOOL  app_start_session(ViewerApp *app);
+void  app_stop_session(ViewerApp *app);
 
 /* sandbox_win32.c — spawn the worker inside an AppContainer. */
 typedef struct {
