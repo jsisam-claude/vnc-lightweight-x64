@@ -10,6 +10,7 @@
 #include "app/app.h"
 
 #include <windowsx.h> /* GET_X_LPARAM / GET_Y_LPARAM */
+#include <stdio.h>    /* _snwprintf_s */
 #include <stdlib.h>
 #include <string.h>
 
@@ -107,6 +108,18 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_PWREQ:
         app_request_password(app);
         return 0;
+
+    case WM_APP_LED: {
+        /* QEMU LED state: bit0=Scroll, bit1=Num, bit2=Caps. Reflect it in the
+         * title (non-intrusively; we don't force the local keyboard LEDs). */
+        unsigned s = (unsigned)wp;
+        wchar_t title[128];
+        _snwprintf_s(title, 128, _TRUNCATE, L"VNC Lightweight  [%s%s%s]",
+                     (s & 4) ? L"CAPS " : L"", (s & 2) ? L"NUM " : L"",
+                     (s & 1) ? L"SCROLL" : L"");
+        SetWindowTextW(hwnd, title);
+        return 0;
+    }
 
     case WM_APP_STATUS:
         if ((int)wp == VNC_STATUS_CONNECTED) app->connected = TRUE;
@@ -302,6 +315,10 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
                 PostMessageW(app->hwnd, WM_APP_CURSOR, 0, (LPARAM)blob); }
             break;
         }
+        case VNC_EVT_LED:
+            if (len == sizeof(vnc_ipc_led))
+                PostMessageW(app->hwnd, WM_APP_LED, buf[0], 0);
+            break;
         case VNC_EVT_PASSWORD_REQ:
             PostMessageW(app->hwnd, WM_APP_PWREQ, 0, 0);
             break;

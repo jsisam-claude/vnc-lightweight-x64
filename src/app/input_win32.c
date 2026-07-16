@@ -84,10 +84,20 @@ void input_key(ViewerApp *app, WPARAM vk, LPARAM lparam, BOOL down)
     if (app->view_only)
         return;
     uint32_t keysym = vk_to_keysym(vk, lparam);
-    if (!keysym)
+
+    /* XT keycode for the QEMU Extended Key Event: the set-1 make code with bit
+     * 0x80 set for extended (0xE0-prefixed) keys — exactly QEMU's qnum space. */
+    uint32_t scancode = (uint32_t)((lparam >> 16) & 0xFF);
+    BOOL extended = (lparam & (1 << 24)) != 0;
+    uint32_t keycode = extended ? (scancode | 0x80u) : scancode;
+
+    if (!keysym && !keycode)
         return;
-    vnc_ipc_key k = { keysym, (uint8_t)(down ? 1 : 0) };
-    vnc_channel_send(&app->ch, VNC_CMD_KEY, &k, sizeof(k));
+
+    /* Send the extended event (keysym + keycode); the worker falls back to a
+     * plain key event if the server did not negotiate the QEMU extension. */
+    vnc_ipc_key_ext k = { keysym, keycode, (uint8_t)(down ? 1 : 0) };
+    vnc_channel_send(&app->ch, VNC_CMD_KEY_EXT, &k, sizeof(k));
 }
 
 void input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam)

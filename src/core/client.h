@@ -54,6 +54,10 @@ typedef struct {
     void (*on_cursor)(void *user, int xhot, int yhot, int width, int height,
                       const uint8_t *bgra, const uint8_t *mask);
 
+    /* Server keyboard LED state changed (QEMU LED State pseudo-encoding).
+     * `state` bit0=Scroll, bit1=Num, bit2=Caps lock. */
+    void (*on_led)(void *user, uint8_t state);
+
     /* Structured log line. Never carries secrets. */
     void (*on_log)(void *user, vnc_log_level level, const char *msg);
 
@@ -88,6 +92,10 @@ bool vnc_client_request_update(vnc_client *c, bool incremental);
 
 /* Input to the server. Safe no-ops in view-only mode. */
 bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down);
+/* Prefer the QEMU Extended Key Event (keysym + XT keycode) when the server
+ * negotiated it; otherwise fall back to a plain key event using keysym. */
+bool vnc_client_send_key_ext(vnc_client *c, uint32_t keysym, uint32_t keycode,
+                             bool down);
 bool vnc_client_send_pointer(vnc_client *c, int x, int y, int button_mask);
 bool vnc_client_send_cut_text(vnc_client *c, const char *text, size_t len);
 

@@ -118,6 +118,13 @@ static void w_on_cursor(void *user, int xhot, int yhot, int width, int height,
     free(px);
 }
 
+static void w_on_led(void *user, uint8_t state)
+{
+    worker *w = user;
+    vnc_ipc_led led = { state };
+    vnc_channel_send(&w->ch, VNC_EVT_LED, &led, sizeof(led));
+}
+
 static void w_on_log(void *user, vnc_log_level level, const char *msg)
 {
     worker *w = user;
@@ -157,6 +164,14 @@ static void dispatch_command(worker *w, uint32_t type, const void *buf, uint32_t
             const vnc_ipc_key *k = buf;
             mtx_lock(&w->api_lock);
             vnc_client_send_key(w->client, k->keysym, k->down != 0);
+            mtx_unlock(&w->api_lock);
+        }
+        break;
+    case VNC_CMD_KEY_EXT:
+        if (len == sizeof(vnc_ipc_key_ext)) {
+            const vnc_ipc_key_ext *k = buf;
+            mtx_lock(&w->api_lock);
+            vnc_client_send_key_ext(w->client, k->keysym, k->keycode, k->down != 0);
             mtx_unlock(&w->api_lock);
         }
         break;
@@ -227,6 +242,7 @@ static int worker_run(worker *w, const char *host, int port,
         .on_desktop_resize = w_on_resize,
         .on_cut_text = w_on_cut_text,
         .on_cursor = w_on_cursor,
+        .on_led = w_on_led,
         .on_log = w_on_log,
         .get_password = w_get_password,
     };

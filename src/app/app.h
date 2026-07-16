@@ -28,6 +28,7 @@
 #define WM_APP_STATUS   (WM_APP + 4) /* wParam=status code */
 #define WM_APP_PWREQ    (WM_APP + 5) /* worker needs a password */
 #define WM_APP_CURSOR   (WM_APP + 6) /* lParam -> heap cursor blob (UI frees) */
+#define WM_APP_LED      (WM_APP + 7) /* wParam = keyboard LED state bitmask */
 
 typedef struct {
     /* IPC to worker */

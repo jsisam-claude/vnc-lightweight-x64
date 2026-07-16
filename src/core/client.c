@@ -146,6 +146,14 @@ static char *cb_get_password(rfbClient *rfb)
     return c->delegate.get_password(c->delegate.user);
 }
 
+static void cb_led_state(rfbClient *rfb, int value, int pad)
+{
+    (void)pad;
+    vnc_client *c = self_of(rfb);
+    if (c->delegate.on_led)
+        c->delegate.on_led(c->delegate.user, (uint8_t)(value & 0xFF));
+}
+
 /* ---- global logger (rfbClientLog/Err are process-global variadic hooks) --- */
 
 static void global_log(const char *fmt, ...)
@@ -187,6 +195,7 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
      * Clipboard (what QEMU speaks). */
     c->rfb->GotXCutTextUTF8 = cb_got_cut_text_utf8;
     c->rfb->GotCursorShape = cb_got_cursor;
+    c->rfb->HandleKeyboardLedState = cb_led_state;
     c->rfb->appData.useRemoteCursor = TRUE; /* request cursor pseudo-encodings */
     c->rfb->GetPassword = cb_get_password;
     c->rfb->canHandleNewFBSize = TRUE;
@@ -253,6 +262,20 @@ bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down)
     if (!c->rfb || c->view_only)
         return false;
     return SendKeyEvent(c->rfb, keysym, down ? TRUE : FALSE) == TRUE;
+}
+
+bool vnc_client_send_key_ext(vnc_client *c, uint32_t keysym, uint32_t keycode,
+                             bool down)
+{
+    if (!c->rfb || c->view_only)
+        return false;
+    /* SendExtendedKeyEvent returns FALSE if the server never negotiated the
+     * QEMU extension; fall back to a keysym-only event in that case. */
+    if (SendExtendedKeyEvent(c->rfb, keysym, keycode, down ? TRUE : FALSE))
+        return true;
+    if (keysym)
+        return SendKeyEvent(c->rfb, keysym, down ? TRUE : FALSE) == TRUE;
+    return false;
 }
 
 bool vnc_client_send_pointer(vnc_client *c, int x, int y, int button_mask)
