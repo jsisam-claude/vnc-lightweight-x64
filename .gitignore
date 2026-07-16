@@ -1,0 +1,12 @@
+# Build output
+/build/
+
+# Editor / IDE
+.vs/
+.vscode/
+*.user
+CMakeUserPresets.json
+
+# OS cruft
+.DS_Store
+Thumbs.db

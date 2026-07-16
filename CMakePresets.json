@@ -1,0 +1,46 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "linux-test",
+      "displayName": "Linux headless test (Debug)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-test",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux headless test + ASan/UBSan (verification gate)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "vs2022-x64",
+      "displayName": "Visual Studio 2022, x64 (Windows product)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022-x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "win-ninja-release",
+      "displayName": "Windows Ninja + cl (Release)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-ninja-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-test",  "configurePreset": "linux-test" },
+    { "name": "linux-asan",  "configurePreset": "linux-asan" },
+    { "name": "vs2022-x64",  "configurePreset": "vs2022-x64" },
+    { "name": "win-ninja-release", "configurePreset": "win-ninja-release" }
+  ]
+}
