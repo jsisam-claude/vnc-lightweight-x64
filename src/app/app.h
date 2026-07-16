@@ -45,6 +45,8 @@ typedef struct {
     BITMAPINFO  bmi;                   /* describes the shm pixels as a DIB */
     HCURSOR     remote_cursor;         /* current server-supplied cursor */
     BOOL        ignore_clip_update;    /* suppress echo of server-set clipboard */
+    struct waveout_sink *audio;        /* QEMU audio playback (reader-thread owned) */
+    BOOL        want_audio;            /* user opted into audio */
 
     /* Connection parameters */
     wchar_t     host[256];
@@ -79,6 +81,7 @@ typedef struct {
     int         port;
     const char *encodings; /* may be NULL */
     BOOL        view_only;
+    BOOL        audio;     /* opt-in QEMU audio */
     const char *shm_name;
     size_t      shm_bytes;
 } WorkerSpawnParams;

@@ -8,6 +8,8 @@
  * no per-pixel conversion.
  */
 #include "app/app.h"
+#include "app/audio_waveout.h"
+#include "ipc/protocol.h"
 
 #include <windowsx.h> /* GET_X_LPARAM / GET_Y_LPARAM */
 #include <stdio.h>    /* _snwprintf_s */
@@ -318,6 +320,23 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
         case VNC_EVT_LED:
             if (len == sizeof(vnc_ipc_led))
                 PostMessageW(app->hwnd, WM_APP_LED, buf[0], 0);
+            break;
+
+        /* Audio is handled directly on this reader thread (off the GUI thread)
+         * to keep playback latency low. */
+        case VNC_EVT_AUDIO_FORMAT:
+            if (len == sizeof(vnc_ipc_audio_cfg)) {
+                vnc_ipc_audio_cfg *a = (void *)buf;
+                if (app->audio) waveout_destroy(app->audio);
+                app->audio = waveout_create(a->sample_format, a->channels,
+                                            a->frequency);
+            }
+            break;
+        case VNC_EVT_AUDIO_DATA:
+            if (app->audio) waveout_feed(app->audio, buf, len);
+            break;
+        case VNC_EVT_AUDIO_END:
+            if (app->audio) waveout_reset(app->audio);
             break;
         case VNC_EVT_PASSWORD_REQ:
             PostMessageW(app->hwnd, WM_APP_PWREQ, 0, 0);

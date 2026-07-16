@@ -15,8 +15,9 @@ the vendored protocol core builds and is proven against real servers.
       (worker/IPC/core verified cross-process on Linux; Win32 GUI + AppContainer
       pending validation on a Windows host)
 - [ ] **M3** — full encoding set + clipboard (RFB Extended Clipboard) + cursor
-- [ ] **M4** — QEMU Extended Key Event + LED state
-- [ ] **M5** — QEMU Audio (waveOut)
+- [x] **M4** — QEMU Extended Key Event + LED state
+- [x] **M5** — QEMU Audio (parser fuzzed + live-negotiated vs QEMU; waveOut sink
+      pending Windows-host validation)
 - [ ] **M6** — VeNCrypt / X509 TLS (best QEMU-supported auth, via OS SChannel)
 - [ ] **M7** — polish (fullscreen, scaling, reconnect)
 - [ ] **M8** — file drag-drop (TightVNC file-transfer extension, server-gated)

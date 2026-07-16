@@ -60,6 +60,29 @@ a wrong `VNC_PASSWORD` must fail closed with "Authentication failure".
 `vnctest` reads the password only from `$VNC_PASSWORD` (never argv). `--ppm FILE`
 dumps a snapshot for eyeballing.
 
+### QEMU audio parser (unit + fuzz + live)
+
+The QEMU audio extension is the one protocol parser we wrote, so it is tested
+three ways:
+
+```
+# 1. Deterministic unit tests (under the ASan/UBSan preset)
+./build/linux-asan/audio_test
+
+# 2. Fuzzing (clang libFuzzer). Requires clang + compiler-rt.
+cmake -S . -B build/fuzz -G Ninja -DENABLE_FUZZ=ON -DCMAKE_C_COMPILER=clang
+cmake --build build/fuzz --target qemu_audio_fuzz
+./build/fuzz/qemu_audio_fuzz tests/fuzz/corpus/audio    # seed corpus committed
+
+# 3. Live negotiation against real QEMU (no guest sound needed to prove the
+#    negotiation is accepted and the connection stays healthy):
+qemu-system-x86_64 -display none -vnc 127.0.0.1:2 -m 128 \
+  -audiodev none,id=a0 -device AC97,audiodev=a0 &
+./build/linux-asan/ipc_test 127.0.0.1:5902 --audio --updates 3 --worker ./build/linux-asan/vncworker
+# expect: audio_format=1, connection alive, zero ASan output. Actual PCM
+# (audio_bytes>0) requires a guest producing sound.
+```
+
 ## Windows manual checklist (per milestone)
 
 Build with Visual Studio Enterprise 2022 (open the folder; pick the

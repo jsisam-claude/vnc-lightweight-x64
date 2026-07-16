@@ -7,6 +7,7 @@
  * sandbox longer than the handshake, and never appear on a command line).
  */
 #include "app/app.h"
+#include "app/audio_waveout.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -165,9 +166,12 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
     }
     ZeroMemory(&g_app, sizeof(g_app));
     parse_target(argv[1], &g_app);
-    for (int i = 2; i < argc; i++)
+    for (int i = 2; i < argc; i++) {
         if (!wcscmp(argv[i], L"--view-only"))
             g_app.view_only = TRUE;
+        else if (!wcscmp(argv[i], L"--audio"))
+            g_app.want_audio = TRUE;
+    }
     LocalFree(argv);
 
     WSADATA wsa;
@@ -197,6 +201,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
         .port = g_app.port,
         .encodings = NULL, /* worker default (M3 lets the UI choose) */
         .view_only = g_app.view_only,
+        .audio = g_app.want_audio,
         .shm_name = g_app.shm_name,
         .shm_bytes = g_app.shm_bytes,
     };
@@ -224,6 +229,9 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
         WaitForSingleObject(g_app.reader_thread, 1000);
         CloseHandle(g_app.reader_thread);
     }
+    /* Reader thread has exited; safe to tear down its audio sink. */
+    if (g_app.audio)
+        waveout_destroy(g_app.audio);
     vnc_shm_close(g_app.shm);
     WSACleanup();
     return 0;

@@ -58,6 +58,12 @@ typedef struct {
      * `state` bit0=Scroll, bit1=Num, bit2=Caps lock. */
     void (*on_led)(void *user, uint8_t state);
 
+    /* QEMU Audio extension. begin/end bracket a playback stream; data delivers
+     * PCM in the format the client requested (see vnc_client_audio_enable). */
+    void (*on_audio_begin)(void *user);
+    void (*on_audio_data)(void *user, const uint8_t *pcm, size_t len);
+    void (*on_audio_end)(void *user);
+
     /* Structured log line. Never carries secrets. */
     void (*on_log)(void *user, vnc_log_level level, const char *msg);
 
@@ -103,6 +109,14 @@ bool vnc_client_send_cut_text(vnc_client *c, const char *text, size_t len);
  * handles. Returns (vnc_handle)-1 pre-connect. */
 typedef intptr_t vnc_handle;
 vnc_handle vnc_client_socket(const vnc_client *c);
+
+/* QEMU Audio: request the server start/stop streaming audio in the given format
+ * (QA_FORMAT_* / channels / frequency from qemu_audio.h). Only meaningful
+ * against a QEMU server; harmless-but-useless elsewhere, so callers gate this on
+ * user opt-in. Must hold the same lock as other sends. */
+bool vnc_client_audio_enable(vnc_client *c, uint8_t format, uint8_t channels,
+                             uint32_t frequency);
+bool vnc_client_audio_disable(vnc_client *c);
 
 /* Accessors for the current framebuffer (32bpp LE). Returns NULL/0 pre-connect. */
 const uint8_t *vnc_client_framebuffer(const vnc_client *c);

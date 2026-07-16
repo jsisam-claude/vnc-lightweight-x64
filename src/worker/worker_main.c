@@ -19,9 +19,15 @@
 #include <string.h>
 
 #include "core/client.h"
+#include "core/qemu_audio.h"
 #include "ipc/channel.h"
 #include "ipc/protocol.h"
 #include "ipc/shm.h"
+
+/* Audio format we request from QEMU: signed 16-bit, stereo, 44.1 kHz. */
+#define WORKER_AUDIO_FORMAT   QA_FORMAT_S16
+#define WORKER_AUDIO_CHANNELS 2
+#define WORKER_AUDIO_FREQ     44100u
 
 #ifdef _WIN32
 #  include <winsock2.h>
@@ -48,6 +54,7 @@ typedef struct {
     vnc_client   *client;
     worker_mutex  api_lock;   /* serialises libvncclient calls */
     volatile int  running;
+    bool          want_audio;
 } worker;
 
 /* ---- delegate: core -> IPC --------------------------------------------- */
@@ -125,6 +132,21 @@ static void w_on_led(void *user, uint8_t state)
     vnc_channel_send(&w->ch, VNC_EVT_LED, &led, sizeof(led));
 }
 
+static void w_on_audio_begin(void *user)
+{
+    (void)user; /* format was already announced at enable; begin needs no action */
+}
+static void w_on_audio_data(void *user, const uint8_t *pcm, size_t len)
+{
+    worker *w = user;
+    vnc_channel_send(&w->ch, VNC_EVT_AUDIO_DATA, pcm, (uint32_t)len);
+}
+static void w_on_audio_end(void *user)
+{
+    worker *w = user;
+    vnc_channel_send(&w->ch, VNC_EVT_AUDIO_END, NULL, 0);
+}
+
 static void w_on_log(void *user, vnc_log_level level, const char *msg)
 {
     worker *w = user;
@@ -196,6 +218,24 @@ static void dispatch_command(worker *w, uint32_t type, const void *buf, uint32_t
             mtx_unlock(&w->api_lock);
         }
         break;
+    case VNC_CMD_AUDIO_ENABLE:
+        if (len == sizeof(vnc_ipc_audio_cfg)) {
+            const vnc_ipc_audio_cfg *a = buf;
+            /* Re-validate format bounds from the (trusted-but-checked) UI. */
+            if (a->channels >= 1 && a->channels <= QA_MAX_CHANNELS &&
+                a->frequency >= QA_MIN_FREQ && a->frequency <= QA_MAX_FREQ) {
+                mtx_lock(&w->api_lock);
+                vnc_client_audio_enable(w->client, a->sample_format,
+                                        a->channels, a->frequency);
+                mtx_unlock(&w->api_lock);
+            }
+        }
+        break;
+    case VNC_CMD_AUDIO_DISABLE:
+        mtx_lock(&w->api_lock);
+        vnc_client_audio_disable(w->client);
+        mtx_unlock(&w->api_lock);
+        break;
     case VNC_CMD_SHUTDOWN:
         w->running = 0;
         break;
@@ -243,6 +283,9 @@ static int worker_run(worker *w, const char *host, int port,
         .on_cut_text = w_on_cut_text,
         .on_cursor = w_on_cursor,
         .on_led = w_on_led,
+        .on_audio_begin = w_on_audio_begin,
+        .on_audio_data = w_on_audio_data,
+        .on_audio_end = w_on_audio_end,
         .on_log = w_on_log,
         .get_password = w_get_password,
     };
@@ -267,6 +310,16 @@ static int worker_run(worker *w, const char *host, int port,
     /* Prime the framebuffer, then drive incremental updates ourselves. */
     mtx_lock(&w->api_lock);
     vnc_client_request_update(w->client, false);
+    /* If audio was opted in, announce the format to the UI and ask the server
+     * to start streaming. Done before the reader thread starts, so the send is
+     * not racing another writer. */
+    if (w->want_audio) {
+        vnc_ipc_audio_cfg cfg = { WORKER_AUDIO_FORMAT, WORKER_AUDIO_CHANNELS,
+                                  WORKER_AUDIO_FREQ };
+        vnc_channel_send(&w->ch, VNC_EVT_AUDIO_FORMAT, &cfg, sizeof(cfg));
+        vnc_client_audio_enable(w->client, WORKER_AUDIO_FORMAT,
+                                WORKER_AUDIO_CHANNELS, WORKER_AUDIO_FREQ);
+    }
     mtx_unlock(&w->api_lock);
 
     w->running = 1;
@@ -333,6 +386,7 @@ int main(int argc, char **argv)
     const char *wr_s = arg_val(argc, argv, "--wr");
     const char *encodings = arg_val(argc, argv, "--encodings");
     bool view_only = arg_flag(argc, argv, "--view-only");
+    bool want_audio = arg_flag(argc, argv, "--audio");
 
     if ((!shm_name && !shm_handle_s) || !shm_bytes_s || !host || !port_s ||
         !rd_s || !wr_s) {
@@ -343,6 +397,7 @@ int main(int argc, char **argv)
     worker w;
     memset(&w, 0, sizeof(w));
     mtx_init(&w.api_lock);
+    w.want_audio = want_audio;
 
     size_t shm_bytes = (size_t)strtoull(shm_bytes_s, NULL, 10);
 #ifdef _WIN32

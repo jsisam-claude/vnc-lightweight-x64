@@ -7,6 +7,8 @@
 
 #include <rfb/rfbclient.h>
 
+#include "core/qemu_audio.h"
+
 /* Clipboard text from an untrusted server is capped before it reaches the UI. */
 #define VNC_MAX_CUT_TEXT (1u << 20) /* 1 MiB */
 
@@ -19,6 +21,7 @@ struct vnc_client {
     vnc_client_delegate delegate;
     char *encodings; /* owned copy, or NULL for library default */
     bool view_only;
+    qa_state audio_state;
 };
 
 /* Tag used to stash our wrapper on the rfbClient for callback bridging. */
@@ -154,6 +157,56 @@ static void cb_led_state(rfbClient *rfb, int value, int pad)
         c->delegate.on_led(c->delegate.user, (uint8_t)(value & 0xFF));
 }
 
+/* ---- QEMU audio extension glue ----------------------------------------- */
+
+static void audio_begin_cb(void *user)
+{
+    vnc_client *c = user;
+    if (c->delegate.on_audio_begin)
+        c->delegate.on_audio_begin(c->delegate.user);
+}
+static void audio_end_cb(void *user)
+{
+    vnc_client *c = user;
+    if (c->delegate.on_audio_end)
+        c->delegate.on_audio_end(c->delegate.user);
+}
+static void audio_data_cb(void *user, const uint8_t *pcm, uint32_t len)
+{
+    vnc_client *c = user;
+    if (c->delegate.on_audio_data)
+        c->delegate.on_audio_data(c->delegate.user, pcm, len);
+}
+
+static bool audio_read(void *ctx, void *dst, uint32_t n)
+{
+    return ReadFromRFBServer((rfbClient *)ctx, (char *)dst, n) == TRUE;
+}
+
+/* Called by libvncclient for server message types it does not handle itself. */
+static rfbBool audio_handle_message(rfbClient *rfb, rfbServerToClientMsg *msg)
+{
+    if (msg->type != rfbQemuEvent) /* 255 */
+        return FALSE;
+    vnc_client *c = self_of(rfb);
+    if (!c)
+        return FALSE;
+    qa_sink sink = { c, audio_begin_cb, audio_end_cb, audio_data_cb };
+    return qemu_audio_parse_server_msg(&c->audio_state, audio_read, rfb, &sink)
+               ? TRUE : FALSE;
+}
+
+/* Advertised so the server knows we can receive audio. Registered process-wide
+ * once; harmless on non-QEMU servers (they ignore the pseudo-encoding and we
+ * never send an ENABLE unless the user opts in). */
+static int audio_encodings[] = { (int)VNC_ENCODING_QEMU_AUDIO, 0 };
+static rfbClientProtocolExtension audio_extension = {
+    audio_encodings,     /* encodings (zero-terminated) */
+    NULL,                /* handleEncoding (audio is delivered via msg 255) */
+    audio_handle_message,/* handleMessage */
+    NULL, NULL, NULL
+};
+
 /* ---- global logger (rfbClientLog/Err are process-global variadic hooks) --- */
 
 static void global_log(const char *fmt, ...)
@@ -175,6 +228,13 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
 
     rfbClientLog = global_log;
     rfbClientErr = global_log;
+
+    /* Register the QEMU audio extension once for the process. */
+    static bool audio_registered = false;
+    if (!audio_registered) {
+        rfbClientRegisterExtension(&audio_extension);
+        audio_registered = true;
+    }
 
     /* 8 bits/sample, 3 samples/pixel, 4 bytes/pixel => 32bpp true colour. */
     c->rfb = rfbGetClient(8, 3, 4);
@@ -302,6 +362,30 @@ vnc_handle vnc_client_socket(const vnc_client *c)
     if (!c->rfb)
         return (vnc_handle)-1;
     return (vnc_handle)c->rfb->sock;
+}
+
+bool vnc_client_audio_enable(vnc_client *c, uint8_t format, uint8_t channels,
+                             uint32_t frequency)
+{
+    if (!c->rfb)
+        return false;
+    uint8_t msg[10];
+    size_t len = 0;
+    qemu_audio_build_set_format(msg, &len, format, channels, frequency);
+    if (WriteToRFBServer(c->rfb, (const char *)msg, (unsigned)len) != TRUE)
+        return false;
+    qemu_audio_build_enable(msg, &len);
+    return WriteToRFBServer(c->rfb, (const char *)msg, (unsigned)len) == TRUE;
+}
+
+bool vnc_client_audio_disable(vnc_client *c)
+{
+    if (!c->rfb)
+        return false;
+    uint8_t msg[10];
+    size_t len = 0;
+    qemu_audio_build_disable(msg, &len);
+    return WriteToRFBServer(c->rfb, (const char *)msg, (unsigned)len) == TRUE;
 }
 
 const uint8_t *vnc_client_framebuffer(const vnc_client *c)

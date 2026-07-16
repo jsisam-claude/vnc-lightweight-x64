@@ -204,7 +204,7 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     wchar_t cmdline[1200];
     _snwprintf_s(cmdline, 1200, _TRUNCATE,
         L"\"%s\" --shm-handle %llu --shm-bytes %zu --host %s --port %d "
-        L"--rd %llu --wr %llu%s%s%s",
+        L"--rd %llu --wr %llu%s%s%s%s",
         exe_path,
         (unsigned long long)(uintptr_t)fbmap_inh,
         p->shm_bytes, whost, p->port,
@@ -212,7 +212,8 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         (unsigned long long)(uintptr_t)evt_wr,
         p->encodings ? L" --encodings " : L"",
         p->encodings ? wenc : L"",
-        p->view_only ? L" --view-only" : L"");
+        p->view_only ? L" --view-only" : L"",
+        p->audio ? L" --audio" : L"");
 
     STARTUPINFOEXW si = {0};
     si.StartupInfo.cb = sizeof(si);

@@ -46,10 +46,12 @@ int main(int argc, char **argv)
     const char *encodings = NULL;
     const char *worker_path = "./vncworker";
     long want_updates = 3;
+    int want_audio = 0;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--encodings") && i + 1 < argc) encodings = argv[++i];
         else if (!strcmp(argv[i], "--worker") && i + 1 < argc) worker_path = argv[++i];
         else if (!strcmp(argv[i], "--updates") && i + 1 < argc) want_updates = strtol(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "--audio")) want_audio = 1;
     }
 
     char host[256];
@@ -90,6 +92,7 @@ int main(int argc, char **argv)
         args[n++] = "--rd";    args[n++] = rd;
         args[n++] = "--wr";    args[n++] = wr;
         if (encodings) { args[n++] = "--encodings"; args[n++] = (char *)encodings; }
+        if (want_audio) { args[n++] = "--audio"; }
         args[n] = NULL;
         execv(worker_path, args);
         perror("execv vncworker");
@@ -103,6 +106,8 @@ int main(int argc, char **argv)
     uint32_t width = 0, height = 0;
     long updates = 0;
     int connected = 0, rc = 1;
+    int audio_format_seen = 0;
+    uint64_t audio_bytes = 0;
     uint8_t buf[VNC_IPC_MAX_PAYLOAD];
 
     for (;;) {
@@ -163,11 +168,20 @@ int main(int argc, char **argv)
             { vnc_ipc_update_req u = { 1 };
               vnc_channel_send(&ch, VNC_CMD_REQUEST_UPDATE, &u, sizeof(u)); }
             break;
+        case VNC_EVT_AUDIO_FORMAT:
+            audio_format_seen = 1;
+            break;
+        case VNC_EVT_AUDIO_DATA:
+            audio_bytes += len;
+            break;
         default:
             break; /* ignore log/cut-text/etc. for this test */
         }
     }
 done:
+    if (want_audio)
+        printf("audio_format=%d audio_bytes=%llu\n", audio_format_seen,
+               (unsigned long long)audio_bytes);
     close(sv[0]);
     int status = 0;
     waitpid(pid, &status, 0);

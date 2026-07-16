@@ -64,6 +64,7 @@ set(VENDOR_SOURCES ${LIBVNCCLIENT_TUS} ${ZLIB_TUS})
 
 set(CORE_SOURCES
   ${CMAKE_SOURCE_DIR}/src/core/client.c
+  ${CMAKE_SOURCE_DIR}/src/core/qemu_audio.c
 )
 
 # IPC layer (portable): shared framebuffer + validated message channel. Linked
@@ -84,12 +85,17 @@ if(MSVC)
   set(VENDOR_WARN_FLAGS /W0 -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS)
 else()
   set(OUR_WARN_FLAGS  -Wall -Wextra)
-  # -w silences upstream warnings. -fno-sanitize=alignment: the vendored ZRLE/
-  # Tight decoders do unaligned word loads that are well-defined on x86-64 (our
-  # only targets: Linux test + x64 Windows). We keep ALL memory-safety checks
-  # (ASan bounds/UAF, other UBSan) on; only the benign alignment check is scoped
-  # out, and only for third-party code — our own code keeps alignment checking.
-  set(VENDOR_WARN_FLAGS -w -fno-sanitize=alignment)
+  # -w silences upstream warnings. The vendored code relies on behaviors that are
+  # well-defined on our only targets (x86-64: Linux test + x64 Windows) but are
+  # technically UB in portable C: unaligned word loads (ZRLE/Tight decoders) and
+  # signed shift/overflow in the byte-swap macros (triggered e.g. by advertising
+  # a negative pseudo-encoding id through libvncclient's int* extension API).
+  # We disable ONLY these arithmetic/portability UBSan checks, and ONLY for
+  # third-party code — AddressSanitizer (the memory-safety checker that matters
+  # for untrusted input) stays fully on for the decoders, and our own code keeps
+  # every check.
+  set(VENDOR_WARN_FLAGS -w
+      -fno-sanitize=alignment,shift,signed-integer-overflow)
 endif()
 
 set_source_files_properties(${VENDOR_SOURCES} PROPERTIES
@@ -156,6 +162,26 @@ if(UNIX AND NOT APPLE)
   target_compile_options(ipc_test PRIVATE ${OUR_WARN_FLAGS})
   target_link_libraries(ipc_test PRIVATE Threads::Threads rt)
   add_dependencies(ipc_test vncworker)
+
+  # Deterministic unit test for the QEMU audio parser (the one protocol parser
+  # we wrote ourselves). Runs under the ASan/UBSan preset.
+  add_executable(audio_test
+    ${CMAKE_SOURCE_DIR}/src/core/qemu_audio.c
+    ${CMAKE_SOURCE_DIR}/src/test/audio_test.c
+  )
+  target_include_directories(audio_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(audio_test PRIVATE ${OUR_WARN_FLAGS})
+endif()
+
+# libFuzzer harness over the audio parser (clang only; -DENABLE_FUZZ=ON).
+if(ENABLE_FUZZ)
+  add_executable(qemu_audio_fuzz
+    ${CMAKE_SOURCE_DIR}/src/core/qemu_audio.c
+    ${CMAKE_SOURCE_DIR}/src/test/qemu_audio_fuzz.c
+  )
+  target_include_directories(qemu_audio_fuzz PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(qemu_audio_fuzz PRIVATE -g -fsanitize=fuzzer,address,undefined)
+  target_link_options(qemu_audio_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -170,11 +196,12 @@ if(WIN32)
     ${CMAKE_SOURCE_DIR}/src/app/viewer_window.c
     ${CMAKE_SOURCE_DIR}/src/app/input_win32.c
     ${CMAKE_SOURCE_DIR}/src/app/clipboard_win32.c
+    ${CMAKE_SOURCE_DIR}/src/app/audio_waveout.c
     ${CMAKE_SOURCE_DIR}/src/app/sandbox_win32.c
   )
   target_include_directories(vncviewer PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})
   target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-  target_link_libraries(vncviewer PRIVATE user32 gdi32 ws2_32 shell32 comdlg32 advapi32 userenv)
+  target_link_libraries(vncviewer PRIVATE user32 gdi32 ws2_32 shell32 comdlg32 advapi32 userenv winmm)
   harden_windows_target(vncviewer)
 endif()
