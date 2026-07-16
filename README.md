@@ -18,7 +18,10 @@ the vendored protocol core builds and is proven against real servers.
 - [x] **M4** — QEMU Extended Key Event + LED state
 - [x] **M5** — QEMU Audio (parser fuzzed + live-negotiated vs QEMU; waveOut sink
       pending Windows-host validation)
-- [ ] **M6** — VeNCrypt / X509 TLS (best QEMU-supported auth, via OS SChannel)
+- [x] **M6** — VeNCrypt / X509 TLS (best QEMU-supported auth, via OS SChannel).
+      Path + certificate verification verified in-container against QEMU via the
+      GnuTLS reference backend; the SChannel product backend is reviewed and
+      pending Windows-host validation.
 - [ ] **M7** — polish (fullscreen, scaling, reconnect)
 - [ ] **M8** — file drag-drop (TightVNC file-transfer extension, server-gated)
 

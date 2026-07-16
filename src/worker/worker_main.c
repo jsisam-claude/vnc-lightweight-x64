@@ -274,7 +274,7 @@ static void *reader_thread(void *arg)
 /* ---- main loop --------------------------------------------------------- */
 
 static int worker_run(worker *w, const char *host, int port,
-                      const char *encodings, bool view_only)
+                      const char *encodings, bool view_only, const char *ca_file)
 {
     vnc_client_delegate d = {
         .user = w,
@@ -294,6 +294,8 @@ static int worker_run(worker *w, const char *host, int port,
         return 1;
     if (encodings && encodings[0])
         vnc_client_set_encodings(w->client, encodings);
+    if (ca_file && ca_file[0])
+        vnc_client_set_ca_file(w->client, ca_file);
     vnc_client_set_view_only(w->client, view_only);
 
     vnc_ipc_hello hello = { VNC_IPC_MAGIC, VNC_IPC_VERSION };
@@ -385,6 +387,7 @@ int main(int argc, char **argv)
     const char *rd_s = arg_val(argc, argv, "--rd");
     const char *wr_s = arg_val(argc, argv, "--wr");
     const char *encodings = arg_val(argc, argv, "--encodings");
+    const char *ca_file = arg_val(argc, argv, "--ca");
     bool view_only = arg_flag(argc, argv, "--view-only");
     bool want_audio = arg_flag(argc, argv, "--audio");
 
@@ -426,7 +429,7 @@ int main(int argc, char **argv)
 #endif
 
     int rc = worker_run(&w, host, (int)strtol(port_s, NULL, 10),
-                        encodings, view_only);
+                        encodings, view_only, ca_file);
 
     if (w.client)
         vnc_client_destroy(w.client);

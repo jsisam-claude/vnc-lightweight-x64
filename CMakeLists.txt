@@ -34,13 +34,31 @@ set(VENDOR_INCLUDE_DIRS
 # Vendored sources actually COMPILED (the decoders + vncauth.c are #included
 # into rfbclient.c, so they are NOT listed here — see UPDATING.md).
 # ---------------------------------------------------------------------------
+# TLS backend selection.
+#   Windows product           -> src/core/tls_schannel.c (OS SChannel, no deps)
+#   Linux TEST/REFERENCE build -> vendored tls_gnutls.c + system GnuTLS, enabled
+#                                 with -DVNC_WITH_GNUTLS=ON to verify the whole
+#                                 VeNCrypt/X509 path end-to-end in CI.
+#   Otherwise                 -> tls_none.c (TLS unavailable)
+option(VNC_WITH_GNUTLS "Build the Linux reference TLS backend against system GnuTLS" OFF)
+
+if(WIN32)
+  set(TLS_TU ${CMAKE_SOURCE_DIR}/src/core/tls_schannel.c)
+elseif(VNC_WITH_GNUTLS)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(GNUTLS REQUIRED gnutls)
+  set(TLS_TU ${LVC}/src/libvncclient/tls_gnutls.c)
+else()
+  set(TLS_TU ${LVC}/src/libvncclient/tls_none.c)
+endif()
+
 set(LIBVNCCLIENT_TUS
   ${LVC}/src/libvncclient/rfbclient.c
   ${LVC}/src/libvncclient/cursor.c
   ${LVC}/src/libvncclient/listen.c      # unreachable (we never listen); see UPDATING.md
   ${LVC}/src/libvncclient/sockets.c
   ${LVC}/src/libvncclient/vncviewer.c
-  ${LVC}/src/libvncclient/tls_none.c    # TLS stubbed; real TLS = OS SChannel later
+  ${TLS_TU}
   ${LVC}/src/common/sockets.c
   ${LVC}/src/common/crypto_included.c   # no-external-dep crypto (VNC-auth DES works)
   ${LVC}/src/common/sha1.c
@@ -113,6 +131,22 @@ function(harden_windows_target tgt)
   endif()
 endfunction()
 
+# Attach the selected TLS backend's compile definitions + libraries to a target
+# that links libvncclient. LIBVNCSERVER_HAVE_GNUTLS gates ONLY the VeNCrypt/TLS
+# security-type SELECTION in rfbclient.c (verified: single use), so we define it
+# for the SChannel build too — the name is a libvncclient misnomer; our
+# tls_schannel.c provides the actual backend functions.
+function(attach_tls tgt)
+  if(WIN32)
+    target_compile_definitions(${tgt} PRIVATE LIBVNCSERVER_HAVE_GNUTLS)
+    target_link_libraries(${tgt} PRIVATE secur32 crypt32)
+  elseif(VNC_WITH_GNUTLS)
+    target_compile_definitions(${tgt} PRIVATE LIBVNCSERVER_HAVE_GNUTLS)
+    target_include_directories(${tgt} PRIVATE ${GNUTLS_INCLUDE_DIRS})
+    target_link_libraries(${tgt} PRIVATE ${GNUTLS_LIBRARIES})
+  endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # vnctest: portable headless verification client (both OSes; ASan target here).
 # ---------------------------------------------------------------------------
@@ -123,6 +157,7 @@ add_executable(vnctest
 )
 target_include_directories(vnctest PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(vnctest PRIVATE ${OUR_WARN_FLAGS})
+attach_tls(vnctest)
 
 if(WIN32)
   target_link_libraries(vnctest PRIVATE ws2_32)
@@ -141,6 +176,7 @@ add_executable(vncworker
 target_include_directories(vncworker PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(vncworker PRIVATE ${OUR_WARN_FLAGS})
 target_link_libraries(vncworker PRIVATE Threads::Threads)
+attach_tls(vncworker)
 if(WIN32)
   target_link_libraries(vncworker PRIVATE ws2_32)
   target_compile_definitions(vncworker PRIVATE WIN32_LEAN_AND_MEAN)

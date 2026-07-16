@@ -171,6 +171,9 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             g_app.view_only = TRUE;
         else if (!wcscmp(argv[i], L"--audio"))
             g_app.want_audio = TRUE;
+        else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc)
+            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
+                                sizeof(g_app.ca_file), NULL, NULL);
     }
     LocalFree(argv);
 
@@ -202,6 +205,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
         .encodings = NULL, /* worker default (M3 lets the UI choose) */
         .view_only = g_app.view_only,
         .audio = g_app.want_audio,
+        .ca_file = g_app.ca_file[0] ? g_app.ca_file : NULL,
         .shm_name = g_app.shm_name,
         .shm_bytes = g_app.shm_bytes,
     };

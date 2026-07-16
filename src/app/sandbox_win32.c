@@ -67,6 +67,24 @@ out:
     return ok;
 }
 
+/* Grant an AppContainer SID read access to a specific file by path, so the
+ * sandboxed worker (which otherwise has no filesystem access) can open e.g. the
+ * CA bundle. Narrow: grants only our worker's package SID, read-only. */
+static void grant_sid_read_to_file(const char *utf8_path, PSID sid)
+{
+    if (!utf8_path || !sid)
+        return;
+    wchar_t wpath[1024];
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, wpath, 1024) <= 0)
+        return;
+    HANDLE h = CreateFileW(wpath, READ_CONTROL | WRITE_DAC, FILE_SHARE_READ,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    grant_sid_to_handle(h, sid, FILE_GENERIC_READ);
+    CloseHandle(h);
+}
+
 /* Create (or reuse) the AppContainer profile and return its SID (LocalFree it,
  * or FreeSid depending on source — see caller). */
 static PSID create_appcontainer_sid(void)
@@ -130,6 +148,10 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         grant_sid_to_handle(fbmap, ac_sid, FILE_MAP_READ | FILE_MAP_WRITE);
         grant_sid_to_handle(cmd_rd, ac_sid, GENERIC_READ | SYNCHRONIZE);
         grant_sid_to_handle(evt_wr, ac_sid, GENERIC_WRITE | SYNCHRONIZE);
+        /* The worker must read the CA bundle for VeNCrypt X509; grant its
+         * package SID read access to that one file. */
+        if (p->ca_file)
+            grant_sid_read_to_file(p->ca_file, ac_sid);
     }
 
     /* Build the extended startup info: security capabilities, mitigations,
@@ -195,16 +217,21 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     if (slash) *slash = 0;
     _snwprintf_s(exe_path, MAX_PATH, _TRUNCATE, L"%s\\vncworker.exe", exe_dir);
 
-    wchar_t whost[256], wenc[512] = L"";
+    wchar_t whost[256], wenc[512] = L"", ca_arg[1060] = L"";
     utf8_to_wide(p->host, whost, 256);
     if (p->encodings) utf8_to_wide(p->encodings, wenc, 512);
+    if (p->ca_file) {
+        wchar_t wca[1024];
+        utf8_to_wide(p->ca_file, wca, 1024);
+        _snwprintf_s(ca_arg, 1060, _TRUNCATE, L" --ca \"%s\"", wca); /* quote: may contain spaces */
+    }
 
     /* Handle values are process-local numbers valid in the child because they
      * are inherited (pipes + framebuffer mapping). */
-    wchar_t cmdline[1200];
-    _snwprintf_s(cmdline, 1200, _TRUNCATE,
+    wchar_t cmdline[2600];
+    _snwprintf_s(cmdline, 2600, _TRUNCATE,
         L"\"%s\" --shm-handle %llu --shm-bytes %zu --host %s --port %d "
-        L"--rd %llu --wr %llu%s%s%s%s",
+        L"--rd %llu --wr %llu%s%s%s%s%s",
         exe_path,
         (unsigned long long)(uintptr_t)fbmap_inh,
         p->shm_bytes, whost, p->port,
@@ -213,7 +240,8 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         p->encodings ? L" --encodings " : L"",
         p->encodings ? wenc : L"",
         p->view_only ? L" --view-only" : L"",
-        p->audio ? L" --audio" : L"");
+        p->audio ? L" --audio" : L"",
+        ca_arg);
 
     STARTUPINFOEXW si = {0};
     si.StartupInfo.cb = sizeof(si);

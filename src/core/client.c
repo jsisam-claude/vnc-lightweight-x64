@@ -20,6 +20,7 @@ struct vnc_client {
     rfbClient *rfb;
     vnc_client_delegate delegate;
     char *encodings; /* owned copy, or NULL for library default */
+    char *ca_file;   /* owned copy, or NULL */
     bool view_only;
     qa_state audio_state;
 };
@@ -149,6 +150,25 @@ static char *cb_get_password(rfbClient *rfb)
     return c->delegate.get_password(c->delegate.user);
 }
 
+/* Supply credentials for VeNCrypt. For X509 we return the CA bundle so the
+ * backend can VERIFY the server certificate; with no CA configured we return
+ * NULL, which makes the handshake fail closed (no unverified TLS). */
+static rfbCredential *cb_get_credential(rfbClient *rfb, int type)
+{
+    vnc_client *c = self_of(rfb);
+    if (type == rfbCredentialTypeX509 && c->ca_file) {
+        rfbCredential *cred = calloc(1, sizeof(*cred));
+        if (!cred)
+            return NULL;
+        cred->x509Credential.x509CACertFile = strdup(c->ca_file);
+        cred->x509Credential.x509CrlVerifyMode = 0; /* rfbX509CrlVerifyNone */
+        return cred; /* libvncclient frees it */
+    }
+    /* VeNCrypt Plain (username/password) is not supported; QEMU uses X509 +
+     * optional VNC auth (handled via GetPassword). */
+    return NULL;
+}
+
 static void cb_led_state(rfbClient *rfb, int value, int pad)
 {
     (void)pad;
@@ -258,6 +278,7 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
     c->rfb->HandleKeyboardLedState = cb_led_state;
     c->rfb->appData.useRemoteCursor = TRUE; /* request cursor pseudo-encodings */
     c->rfb->GetPassword = cb_get_password;
+    c->rfb->GetCredential = cb_get_credential;
     c->rfb->canHandleNewFBSize = TRUE;
     return c;
 }
@@ -271,6 +292,12 @@ void vnc_client_set_encodings(vnc_client *c, const char *encodings)
 void vnc_client_set_view_only(vnc_client *c, bool view_only)
 {
     c->view_only = view_only;
+}
+
+void vnc_client_set_ca_file(vnc_client *c, const char *ca_file)
+{
+    free(c->ca_file);
+    c->ca_file = ca_file ? strdup(ca_file) : NULL;
 }
 
 bool vnc_client_connect(vnc_client *c, const char *host, int port)
@@ -418,5 +445,6 @@ void vnc_client_destroy(vnc_client *c)
         rfbClientCleanup(c->rfb);
     }
     free(c->encodings);
+    free(c->ca_file);
     free(c);
 }

@@ -125,6 +125,7 @@ int main(int argc, char **argv)
     const char *target = argv[1];
     const char *encodings = NULL;
     const char *ppm_path = NULL;
+    const char *ca_file = NULL;
     long want_frames = 1;
     int timeout_ms = 5000;
     bool view_only = false;
@@ -138,6 +139,8 @@ int main(int argc, char **argv)
             timeout_ms = (int)strtol(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc)
             ppm_path = argv[++i];
+        else if (!strcmp(argv[i], "--ca") && i + 1 < argc)
+            ca_file = argv[++i];
         else if (!strcmp(argv[i], "--view-only"))
             view_only = true;
         else {
@@ -175,6 +178,8 @@ int main(int argc, char **argv)
     }
     if (encodings)
         vnc_client_set_encodings(c, encodings);
+    if (ca_file)
+        vnc_client_set_ca_file(c, ca_file);
     vnc_client_set_view_only(c, view_only);
 
     if (!vnc_client_connect(c, host, port)) {

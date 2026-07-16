@@ -82,6 +82,12 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate);
  * The string is copied. */
 void vnc_client_set_encodings(vnc_client *c, const char *encodings);
 
+/* Path to a PEM CA bundle used to verify the server certificate for VeNCrypt
+ * X509 (the best QEMU-supported auth). Required for an X509 handshake to
+ * succeed — with no CA set, the TLS backend refuses to proceed (no
+ * trust-on-first-use). The string is copied. */
+void vnc_client_set_ca_file(vnc_client *c, const char *ca_file);
+
 /* Set view-only (never send input). */
 void vnc_client_set_view_only(vnc_client *c, bool view_only);
 

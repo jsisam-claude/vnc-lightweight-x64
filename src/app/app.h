@@ -53,6 +53,7 @@ typedef struct {
     int         port;
     BOOL        view_only;
     BOOL        connected;
+    char        ca_file[1024]; /* UTF-8 PEM CA path, empty if none */
 } ViewerApp;
 
 /* viewer_window.c */
@@ -82,6 +83,7 @@ typedef struct {
     const char *encodings; /* may be NULL */
     BOOL        view_only;
     BOOL        audio;     /* opt-in QEMU audio */
+    const char *ca_file;   /* PEM CA bundle for VeNCrypt X509 (UTF-8), or NULL */
     const char *shm_name;
     size_t      shm_bytes;
 } WorkerSpawnParams;
