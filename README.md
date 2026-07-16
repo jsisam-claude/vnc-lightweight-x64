@@ -25,7 +25,11 @@ the vendored protocol core builds and is proven against real servers.
 - [x] **M7** — polish: aspect-preserving scaling (+ `--stretch` / `--scale-1to1`),
       fullscreen toggle (F11 / Ctrl+Alt+F, `--fullscreen`), reconnect-on-disconnect
       prompt (Windows UI; pending Windows-host validation)
-- [ ] **M8** — file drag-drop (TightVNC file-transfer extension, server-gated)
+- [~] **M8** — file drag-drop: path-traversal defense (tested) + drag-drop
+      capture done. The upload *transport* (TightVNC file-transfer extension)
+      is server-gated — it needs a TightVNC/UltraVNC server in the guest; QEMU's
+      VNC has no file channel — and remains to be implemented against such a
+      server. See "File transfer" below.
 
 ## What it is / isn't
 

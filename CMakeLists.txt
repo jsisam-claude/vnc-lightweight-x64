@@ -207,6 +207,14 @@ if(UNIX AND NOT APPLE)
   )
   target_include_directories(audio_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_compile_options(audio_test PRIVATE ${OUR_WARN_FLAGS})
+
+  # Path-traversal defense for file transfer (security-critical, portable).
+  add_executable(ftpath_test
+    ${CMAKE_SOURCE_DIR}/src/core/ftpath.c
+    ${CMAKE_SOURCE_DIR}/src/test/ftpath_test.c
+  )
+  target_include_directories(ftpath_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(ftpath_test PRIVATE ${OUR_WARN_FLAGS})
 endif()
 
 # libFuzzer harness over the audio parser (clang only; -DENABLE_FUZZ=ON).
@@ -228,6 +236,7 @@ endif()
 if(WIN32)
   add_executable(vncviewer WIN32
     ${IPC_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/core/ftpath.c
     ${CMAKE_SOURCE_DIR}/src/app/main_win32.c
     ${CMAKE_SOURCE_DIR}/src/app/viewer_window.c
     ${CMAKE_SOURCE_DIR}/src/app/input_win32.c

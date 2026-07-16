@@ -9,9 +9,11 @@
  */
 #include "app/app.h"
 #include "app/audio_waveout.h"
+#include "core/ftpath.h"
 #include "ipc/protocol.h"
 
 #include <windowsx.h> /* GET_X_LPARAM / GET_Y_LPARAM */
+#include <shellapi.h> /* DragAcceptFiles / DragQueryFile */
 #include <stdio.h>    /* _snwprintf_s */
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +92,38 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         CREATESTRUCTW *cs = (CREATESTRUCTW *)lp;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         AddClipboardFormatListener(hwnd); /* local clipboard -> server */
+        DragAcceptFiles(hwnd, TRUE);      /* file drag-drop upload */
+        return 0;
+    }
+
+    case WM_DROPFILES: {
+        HDROP drop = (HDROP)wp;
+        UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+        /* Capture + validate the dropped files. The actual upload transport is
+         * the TightVNC file-transfer extension, which only a TightVNC/UltraVNC
+         * guest server supports (QEMU's VNC has no file channel); it is not yet
+         * wired. We validate names now so the security boundary (path-traversal
+         * defense in ft_sanitize_remote_name / ft_basename) is already in place. */
+        UINT valid = 0;
+        for (UINT i = 0; i < count; i++) {
+            wchar_t wpath[MAX_PATH];
+            if (DragQueryFileW(drop, i, wpath, MAX_PATH)) {
+                char path[MAX_PATH * 2];
+                WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, sizeof(path), NULL, NULL);
+                char safe[FT_MAX_NAME + 1];
+                if (ft_sanitize_remote_name(ft_basename(path), safe, sizeof(safe)))
+                    valid++;
+            }
+        }
+        DragFinish(drop);
+        wchar_t msg[256];
+        _snwprintf_s(msg, 256, _TRUNCATE,
+            L"%u file(s) ready to upload.\n\n"
+            L"File transfer requires a TightVNC/UltraVNC server in the guest; "
+            L"QEMU's built-in VNC has no file channel. The transport is not yet "
+            L"implemented in this build.", valid);
+        MessageBoxW(hwnd, msg, L"VNC Lightweight — File transfer",
+                    MB_OK | MB_ICONINFORMATION);
         return 0;
     }
 
