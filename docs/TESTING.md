@@ -69,6 +69,14 @@ Build with Visual Studio Enterprise 2022 (open the folder; pick the
   keyboard incl. shifted symbols, mouse + wheel, clean disconnect on close.
   In Process Explorer confirm `vncworker` runs with an AppContainer SID and the
   ACG / CIG / no-win32k mitigation flags set, and cannot create files or windows.
+  - The worker is spawned with **STRICT Control Flow Guard** + **CET** ALWAYS_ON,
+    so it must be built `/guard:cf /CETCOMPAT` (CMake's `harden_windows_target`
+    does this). If `CreateProcess` fails at spawn, check those flags first.
+  - **CIG** (`BLOCK_NON_MICROSOFT_BINARIES`) means every DLL the worker loads
+    must be Microsoft-signed. This holds today (zlib/libvncclient are vendored
+    and compiled in; the only imports are `ws2_32` + the MS CRT). Adding any
+    non-MS DLL dependency to the worker — or building vendored code as a DLL —
+    will make it fail to start. Keep worker dependencies static/system-only.
 - **M3 encodings + clipboard + cursor**: default encodings negotiate; text
   copy/paste both directions (RFB Extended Clipboard vs QEMU `qemu-vdagent`);
   remote cursor shape tracks the guest.

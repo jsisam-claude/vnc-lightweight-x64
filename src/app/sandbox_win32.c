@@ -1,0 +1,261 @@
+/*
+ * sandbox_win32.c — spawn vncworker inside a locked-down AppContainer.
+ *
+ * The worker parses untrusted RFB data, so it runs with the strongest process
+ * confinement Windows offers:
+ *   - AppContainer token (lowbox) with a SINGLE capability: internetClient
+ *     (outbound TCP to the VNC server). No filesystem, registry, UI, or other
+ *     network capability.
+ *   - Process mitigation policies: ACG (no dynamically-generated executable
+ *     memory), CIG (only Microsoft-signed images load), win32k syscall surface
+ *     disabled, heap-terminate-on-corruption, forced ASLR / bottom-up ASLR,
+ *     strict handle checks, extension-point disable, and strict Control Flow
+ *     Guard.
+ *   - Only the two IPC pipe ends and the framebuffer mapping are shared in; each
+ *     is DACL'd to the AppContainer SID explicitly.
+ *
+ * Fails closed: if the AppContainer cannot be created the worker is not spawned
+ * (unless built with VNC_ALLOW_UNSANDBOXED for local debugging).
+ *
+ * NOTE: this module targets the documented Win32 API surface and is pending
+ * validation on a Windows host (it cannot be exercised in the Linux CI used for
+ * the protocol core). See docs/TESTING.md, M2 checklist.
+ */
+#include "app/app.h"
+
+#include <userenv.h>
+#include <aclapi.h>
+#include <sddl.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#pragma comment(lib, "userenv.lib")
+#pragma comment(lib, "advapi32.lib")
+
+#define APPCONTAINER_NAME    L"vnc-lightweight-x64.worker"
+#define APPCONTAINER_DISPLAY L"VNC Lightweight Worker"
+
+/* Add an allow-ACE for `sid` with `access` to a kernel object's DACL. */
+static BOOL grant_sid_to_handle(HANDLE obj, PSID sid, DWORD access)
+{
+    PACL old_dacl = NULL, new_dacl = NULL;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    BOOL ok = FALSE;
+
+    if (GetSecurityInfo(obj, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                        NULL, NULL, &old_dacl, NULL, &sd) != ERROR_SUCCESS)
+        return FALSE;
+
+    EXPLICIT_ACCESSW ea;
+    ZeroMemory(&ea, sizeof(ea));
+    ea.grfAccessPermissions = access;
+    ea.grfAccessMode = GRANT_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+    ea.Trustee.ptstrName = (LPWSTR)sid;
+
+    if (SetEntriesInAclW(1, &ea, old_dacl, &new_dacl) != ERROR_SUCCESS)
+        goto out;
+    if (SetSecurityInfo(obj, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                        NULL, NULL, new_dacl, NULL) != ERROR_SUCCESS)
+        goto out;
+    ok = TRUE;
+out:
+    if (sd) LocalFree(sd);
+    if (new_dacl) LocalFree(new_dacl);
+    return ok;
+}
+
+/* Create (or reuse) the AppContainer profile and return its SID (LocalFree it,
+ * or FreeSid depending on source — see caller). */
+static PSID create_appcontainer_sid(void)
+{
+    PSID sid = NULL;
+    HRESULT hr = CreateAppContainerProfile(APPCONTAINER_NAME, APPCONTAINER_DISPLAY,
+                                           APPCONTAINER_DISPLAY, NULL, 0, &sid);
+    if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
+        if (FAILED(DeriveAppContainerSidFromAppContainerName(APPCONTAINER_NAME, &sid)))
+            return NULL;
+    } else if (FAILED(hr)) {
+        return NULL;
+    }
+    return sid; /* free with FreeSid() */
+}
+
+static BOOL utf8_to_wide(const char *s, wchar_t *out, int out_chars)
+{
+    return MultiByteToWideChar(CP_UTF8, 0, s, -1, out, out_chars) > 0;
+}
+
+BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
+{
+    BOOL result = FALSE;
+    PSID ac_sid = NULL;
+    HANDLE cmd_rd = NULL, cmd_wr = NULL, evt_rd = NULL, evt_wr = NULL;
+    HANDLE fbmap_inh = NULL;
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
+    SID_AND_ATTRIBUTES cap = {0};
+    PSID inet_sid = NULL;
+
+    ac_sid = create_appcontainer_sid();
+    if (!ac_sid) {
+        fprintf(stderr, "sandbox: cannot create AppContainer profile (err %lu)\n",
+                GetLastError());
+#ifndef VNC_ALLOW_UNSANDBOXED
+        return FALSE; /* fail closed */
+#endif
+    }
+
+    /* Two anonymous pipes => a duplex channel. Worker ends are inheritable. */
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    if (!CreatePipe(&cmd_rd, &cmd_wr, &sa, 0)) goto cleanup; /* UI writes cmd_wr */
+    if (!CreatePipe(&evt_rd, &evt_wr, &sa, 0)) goto cleanup; /* UI reads evt_rd */
+    /* UI-side ends must NOT be inherited by the worker. */
+    SetHandleInformation(cmd_wr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(evt_rd, HANDLE_FLAG_INHERIT, 0);
+
+    /* The worker gets the framebuffer as an INHERITED handle (an AppContainer
+     * cannot open the Local\ mapping by name). Duplicate an inheritable copy and
+     * also grant the AppContainer SID on the underlying section object so the
+     * lowbox token may use it. */
+    HANDLE fbmap = (HANDLE)vnc_shm_native_handle(app->shm);
+    if (!fbmap ||
+        !DuplicateHandle(GetCurrentProcess(), fbmap, GetCurrentProcess(),
+                         &fbmap_inh, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        fprintf(stderr, "sandbox: cannot duplicate framebuffer handle\n");
+        goto cleanup;
+    }
+    if (ac_sid) {
+        grant_sid_to_handle(fbmap, ac_sid, FILE_MAP_READ | FILE_MAP_WRITE);
+        grant_sid_to_handle(cmd_rd, ac_sid, GENERIC_READ | SYNCHRONIZE);
+        grant_sid_to_handle(evt_wr, ac_sid, GENERIC_WRITE | SYNCHRONIZE);
+    }
+
+    /* Build the extended startup info: security capabilities, mitigations,
+     * and an explicit inherit-only-these-handles list. */
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(NULL, 3, 0, &attr_size);
+    attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attr_size);
+    if (!attrs) goto cleanup;
+    if (!InitializeProcThreadAttributeList(attrs, 3, 0, &attr_size)) goto cleanup;
+
+    /* (1) Security capabilities: AppContainer SID + internetClient capability. */
+    SECURITY_CAPABILITIES sec_caps = {0};
+    if (ac_sid) {
+        SID_IDENTIFIER_AUTHORITY app_authority = SECURITY_APP_PACKAGE_AUTHORITY;
+        if (!AllocateAndInitializeSid(&app_authority,
+                SECURITY_BUILTIN_CAPABILITY_RID_COUNT,
+                SECURITY_CAPABILITY_BASE_RID, SECURITY_CAPABILITY_INTERNET_CLIENT,
+                0, 0, 0, 0, 0, 0, &inet_sid))
+            goto cleanup;
+        cap.Sid = inet_sid;
+        cap.Attributes = SE_GROUP_ENABLED;
+        sec_caps.AppContainerSid = ac_sid;
+        sec_caps.Capabilities = &cap;
+        sec_caps.CapabilityCount = 1;
+        if (!UpdateProcThreadAttribute(attrs, 0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                &sec_caps, sizeof(sec_caps), NULL, NULL))
+            goto cleanup;
+    }
+
+    /* (2) Process mitigation policies (two DWORD64 words: policy + policy2). */
+    DWORD64 mit[2];
+    mit[0] =
+        PROCESS_CREATION_MITIGATION_POLICY_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_HEAP_TERMINATE_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_FORCE_RELOCATE_IMAGES_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_HIGH_ENTROPY_ASLR_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_STRICT_HANDLE_CHECKS_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON;
+    mit[1] =
+        PROCESS_CREATION_MITIGATION_POLICY2_STRICT_CONTROL_FLOW_GUARD_ALWAYS_ON |
+        PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_ALWAYS_ON;
+    if (!UpdateProcThreadAttribute(attrs, 0,
+            PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+            mit, sizeof(mit), NULL, NULL))
+        goto cleanup;
+
+    /* (3) Inherit exactly the two worker pipe ends and the framebuffer mapping. */
+    HANDLE inherit[3] = { cmd_rd, evt_wr, fbmap_inh };
+    if (!UpdateProcThreadAttribute(attrs, 0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inherit, sizeof(inherit), NULL, NULL))
+        goto cleanup;
+
+    /* Build the command line. Handle values are process-local numbers valid in
+     * the child because they are inherited. */
+    wchar_t exe_dir[MAX_PATH], exe_path[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_dir, MAX_PATH);
+    wchar_t *slash = wcsrchr(exe_dir, L'\\');
+    if (slash) *slash = 0;
+    _snwprintf_s(exe_path, MAX_PATH, _TRUNCATE, L"%s\\vncworker.exe", exe_dir);
+
+    wchar_t whost[256], wenc[512] = L"";
+    utf8_to_wide(p->host, whost, 256);
+    if (p->encodings) utf8_to_wide(p->encodings, wenc, 512);
+
+    /* Handle values are process-local numbers valid in the child because they
+     * are inherited (pipes + framebuffer mapping). */
+    wchar_t cmdline[1200];
+    _snwprintf_s(cmdline, 1200, _TRUNCATE,
+        L"\"%s\" --shm-handle %llu --shm-bytes %zu --host %s --port %d "
+        L"--rd %llu --wr %llu%s%s%s",
+        exe_path,
+        (unsigned long long)(uintptr_t)fbmap_inh,
+        p->shm_bytes, whost, p->port,
+        (unsigned long long)(uintptr_t)cmd_rd,
+        (unsigned long long)(uintptr_t)evt_wr,
+        p->encodings ? L" --encodings " : L"",
+        p->encodings ? wenc : L"",
+        p->view_only ? L" --view-only" : L"");
+
+    STARTUPINFOEXW si = {0};
+    si.StartupInfo.cb = sizeof(si);
+    si.lpAttributeList = attrs;
+    PROCESS_INFORMATION pi = {0};
+
+    if (!CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE,
+                        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                        NULL, exe_dir, &si.StartupInfo, &pi)) {
+        fprintf(stderr, "sandbox: CreateProcess failed (err %lu)\n", GetLastError());
+        goto cleanup;
+    }
+    CloseHandle(pi.hThread);
+    app->worker_process = pi.hProcess;
+
+    /* UI keeps its own ends; the worker's ends are now the child's. */
+    app->ch.wr = (vnc_handle)cmd_wr; cmd_wr = NULL;
+    app->ch.rd = (vnc_handle)evt_rd; evt_rd = NULL;
+    result = TRUE;
+
+cleanup:
+    if (cmd_rd) CloseHandle(cmd_rd);   /* child got its own inherited copy */
+    if (evt_wr) CloseHandle(evt_wr);
+    if (fbmap_inh) CloseHandle(fbmap_inh);
+    if (!result) {
+        if (cmd_wr) CloseHandle(cmd_wr);
+        if (evt_rd) CloseHandle(evt_rd);
+    }
+    if (attrs) { DeleteProcThreadAttributeList(attrs); HeapFree(GetProcessHeap(), 0, attrs); }
+    if (inet_sid) FreeSid(inet_sid);
+    if (ac_sid) FreeSid(ac_sid);
+    return result;
+}
+
+void sandbox_cleanup(ViewerApp *app)
+{
+    if (app->ch.wr) { CloseHandle((HANDLE)app->ch.wr); app->ch.wr = 0; }
+    if (app->ch.rd) { CloseHandle((HANDLE)app->ch.rd); app->ch.rd = 0; }
+    if (app->worker_process) {
+        /* Ask nicely first (SHUTDOWN was sent by the caller), then ensure exit. */
+        if (WaitForSingleObject(app->worker_process, 2000) == WAIT_TIMEOUT)
+            TerminateProcess(app->worker_process, 1);
+        CloseHandle(app->worker_process);
+        app->worker_process = NULL;
+    }
+}

@@ -79,6 +79,16 @@ int vnc_client_pump(vnc_client *c, unsigned timeout_us);
 /* Request a framebuffer update (incremental or full). */
 bool vnc_client_request_update(vnc_client *c, bool incremental);
 
+/* Input to the server. Safe no-ops in view-only mode. */
+bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down);
+bool vnc_client_send_pointer(vnc_client *c, int x, int y, int button_mask);
+bool vnc_client_send_cut_text(vnc_client *c, const char *text, size_t len);
+
+/* Underlying RFB socket, for event loops that select() on it alongside other
+ * handles. Returns (vnc_handle)-1 pre-connect. */
+typedef intptr_t vnc_handle;
+vnc_handle vnc_client_socket(const vnc_client *c);
+
 /* Accessors for the current framebuffer (32bpp LE). Returns NULL/0 pre-connect. */
 const uint8_t *vnc_client_framebuffer(const vnc_client *c);
 int vnc_client_width(const vnc_client *c);

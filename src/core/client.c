@@ -216,6 +216,37 @@ bool vnc_client_request_update(vnc_client *c, bool incremental)
                                         incremental ? TRUE : FALSE) == TRUE;
 }
 
+bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down)
+{
+    if (!c->rfb || c->view_only)
+        return false;
+    return SendKeyEvent(c->rfb, keysym, down ? TRUE : FALSE) == TRUE;
+}
+
+bool vnc_client_send_pointer(vnc_client *c, int x, int y, int button_mask)
+{
+    if (!c->rfb || c->view_only)
+        return false;
+    return SendPointerEvent(c->rfb, x, y, button_mask) == TRUE;
+}
+
+bool vnc_client_send_cut_text(vnc_client *c, const char *text, size_t len)
+{
+    if (!c->rfb || c->view_only)
+        return false;
+    if (len > VNC_MAX_CUT_TEXT)
+        len = VNC_MAX_CUT_TEXT;
+    /* libvncclient takes a non-const char*; it does not modify the buffer. */
+    return SendClientCutText(c->rfb, (char *)text, (int)len) == TRUE;
+}
+
+vnc_handle vnc_client_socket(const vnc_client *c)
+{
+    if (!c->rfb)
+        return (vnc_handle)-1;
+    return (vnc_handle)c->rfb->sock;
+}
+
 const uint8_t *vnc_client_framebuffer(const vnc_client *c)
 {
     return c->rfb ? c->rfb->frameBuffer : NULL;

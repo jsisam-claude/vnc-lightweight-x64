@@ -66,6 +66,15 @@ set(CORE_SOURCES
   ${CMAKE_SOURCE_DIR}/src/core/client.c
 )
 
+# IPC layer (portable): shared framebuffer + validated message channel. Linked
+# by the worker and the UI, but NOT by any RFB-parsing code path on the UI side.
+set(IPC_SOURCES
+  ${CMAKE_SOURCE_DIR}/src/ipc/shm.c
+  ${CMAKE_SOURCE_DIR}/src/ipc/channel.c
+)
+
+find_package(Threads REQUIRED)
+
 # ---------------------------------------------------------------------------
 # Warning policy: our code is warning-clean; vendored code gets suppressions
 # scoped to its files only (never edited in place).
@@ -86,6 +95,18 @@ endif()
 set_source_files_properties(${VENDOR_SOURCES} PROPERTIES
   COMPILE_OPTIONS "${VENDOR_WARN_FLAGS}")
 
+# Runtime hardening for the Windows binaries. The worker is spawned with STRICT
+# Control Flow Guard and CET shadow-stack mitigations ALWAYS_ON, so its image
+# MUST be built /guard:cf (and marked /CETCOMPAT) or CreateProcess refuses it.
+# Applied to both Windows executables via harden_windows_target().
+function(harden_windows_target tgt)
+  if(MSVC)
+    target_compile_options(${tgt} PRIVATE /guard:cf /Qspectre)
+    target_link_options(${tgt} PRIVATE
+      /guard:cf /CETCOMPAT /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT)
+  endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # vnctest: portable headless verification client (both OSes; ASan target here).
 # ---------------------------------------------------------------------------
@@ -103,8 +124,57 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# vncviewer: the Windows product (added in M2). Guarded so Linux configures.
+# vncworker: the untrusted decoder process. Contains all RFB-parsing code.
+# ---------------------------------------------------------------------------
+add_executable(vncworker
+  ${VENDOR_SOURCES}
+  ${CORE_SOURCES}
+  ${IPC_SOURCES}
+  ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c
+)
+target_include_directories(vncworker PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(vncworker PRIVATE ${OUR_WARN_FLAGS})
+target_link_libraries(vncworker PRIVATE Threads::Threads)
+if(WIN32)
+  target_link_libraries(vncworker PRIVATE ws2_32)
+  target_compile_definitions(vncworker PRIVATE WIN32_LEAN_AND_MEAN)
+  harden_windows_target(vncworker) # required for the STRICT-CFG spawn to succeed
+elseif(UNIX AND NOT APPLE)
+  target_link_libraries(vncworker PRIVATE rt) # shm_open
+endif()
+
+# ---------------------------------------------------------------------------
+# ipc_test: Linux-only cross-process verification of worker + IPC + shm + core.
+# Spawns vncworker; contains NO RFB-parsing code itself.
+# ---------------------------------------------------------------------------
+if(UNIX AND NOT APPLE)
+  add_executable(ipc_test
+    ${IPC_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/test/ipc_test.c
+  )
+  target_include_directories(ipc_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(ipc_test PRIVATE ${OUR_WARN_FLAGS})
+  target_link_libraries(ipc_test PRIVATE Threads::Threads rt)
+  add_dependencies(ipc_test vncworker)
+endif()
+
+# ---------------------------------------------------------------------------
+# vncviewer: the trusted UI/broker (Windows product). Deliberately does NOT
+# link the vendored RFB decoders — all parsing lives in vncworker. Added with
+# the Win32 shell sources below.
 # ---------------------------------------------------------------------------
 if(WIN32)
-  # add_executable(vncviewer WIN32 ...)  # M2: Win32 shell + sandboxed worker
+  add_executable(vncviewer WIN32
+    ${IPC_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/app/main_win32.c
+    ${CMAKE_SOURCE_DIR}/src/app/viewer_window.c
+    ${CMAKE_SOURCE_DIR}/src/app/input_win32.c
+    ${CMAKE_SOURCE_DIR}/src/app/clipboard_win32.c
+    ${CMAKE_SOURCE_DIR}/src/app/sandbox_win32.c
+  )
+  target_include_directories(vncviewer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})
+  target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  target_link_libraries(vncviewer PRIVATE user32 gdi32 ws2_32 shell32 comdlg32 advapi32 userenv)
+  harden_windows_target(vncviewer)
 endif()

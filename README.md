@@ -11,7 +11,9 @@ Under construction, milestone by milestone (see the plan). **M1 is complete**:
 the vendored protocol core builds and is proven against real servers.
 
 - [x] **M1** — vendor libvncclient + zlib; portable core; headless proof
-- [ ] **M2** — Win32 shell + sandboxed decoder worker
+- [x] **M2** — two-process split: IPC + sandboxed decoder worker + Win32 shell
+      (worker/IPC/core verified cross-process on Linux; Win32 GUI + AppContainer
+      pending validation on a Windows host)
 - [ ] **M3** — full encoding set + clipboard (RFB Extended Clipboard) + cursor
 - [ ] **M4** — QEMU Extended Key Event + LED state
 - [ ] **M5** — QEMU Audio (waveOut)
