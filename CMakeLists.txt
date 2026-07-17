@@ -100,7 +100,12 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 if(MSVC)
   set(OUR_WARN_FLAGS  /W4 /sdl)
-  set(VENDOR_WARN_FLAGS /W0 -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS)
+  # Vendored code: warnings off. /sdl- is required because /sdl (from the target)
+  # otherwise leaks onto these sources and PROMOTES benign warnings (e.g. C4146,
+  # unary minus on unsigned, in the crypto/bit code) to errors; source-level
+  # options come after target options on the command line, so /sdl- wins.
+  set(VENDOR_WARN_FLAGS /W0 /sdl- /wd4146
+      -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS)
 else()
   set(OUR_WARN_FLAGS  -Wall -Wextra)
   # -w silences upstream warnings. The vendored code relies on behaviors that are

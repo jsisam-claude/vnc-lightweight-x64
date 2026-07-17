@@ -125,8 +125,9 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
                 GetLastError());
 #ifndef VNC_ALLOW_UNSANDBOXED
         return FALSE; /* fail closed */
-#endif
+#else
         diag_logf(DIAG_WARN, "sandbox: continuing UNSANDBOXED (debug build)");
+#endif
     } else {
         diag_logf(DIAG_INFO, "sandbox: AppContainer SID acquired");
     }

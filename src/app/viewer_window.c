@@ -117,13 +117,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
         DragFinish(drop);
-        wchar_t msg[256];
-        _snwprintf_s(msg, 256, _TRUNCATE,
+        wchar_t note[256];
+        _snwprintf_s(note, 256, _TRUNCATE,
             L"%u file(s) ready to upload.\n\n"
             L"File transfer requires a TightVNC/UltraVNC server in the guest; "
             L"QEMU's built-in VNC has no file channel. The transport is not yet "
             L"implemented in this build.", valid);
-        MessageBoxW(hwnd, msg, L"VNC Lightweight — File transfer",
+        MessageBoxW(hwnd, note, L"VNC Lightweight — File transfer",
                     MB_OK | MB_ICONINFORMATION);
         return 0;
     }

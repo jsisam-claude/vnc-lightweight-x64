@@ -9,6 +9,8 @@
 #include "app/app.h"
 #include "app/diag.h"
 
+#include <stdlib.h> /* malloc/free — else implicit int truncates the ptr on x64 */
+
 void clipboard_from_server(ViewerApp *app, const char *text, unsigned len)
 {
     if (len == 0)
