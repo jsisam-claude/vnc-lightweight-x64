@@ -30,6 +30,14 @@
 #define WORKER_AUDIO_CHANNELS 2
 #define WORKER_AUDIO_FREQ     44100u
 
+/* Zero memory so the compiler cannot optimise it away (portable). */
+static void secure_wipe(void *p, size_t n)
+{
+    volatile unsigned char *v = (volatile unsigned char *)p;
+    while (n--)
+        *v++ = 0;
+}
+
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <windows.h>
@@ -180,13 +188,16 @@ static char *w_get_password(void *user)
     char buf[512];
     if (vnc_channel_recv(&w->ch, &type, buf, sizeof(buf) - 1, &len) != 1)
         return NULL;
-    if (type != VNC_CMD_PASSWORD)
+    if (type != VNC_CMD_PASSWORD) {
+        secure_wipe(buf, sizeof(buf));
         return NULL;
+    }
     char *pw = malloc(len + 1);
-    if (!pw)
-        return NULL;
-    memcpy(pw, buf, len);
-    pw[len] = '\0';
+    if (pw) {
+        memcpy(pw, buf, len);
+        pw[len] = '\0';
+    }
+    secure_wipe(buf, sizeof(buf)); /* don't leave the password on the stack */
     return pw; /* libvncclient frees it */
 }
 
@@ -266,9 +277,11 @@ static void *reader_thread(void *arg)
 #endif
 {
     worker *w = arg;
+    /* static: 1 MiB is too large for the default 1 MiB thread stack, and there
+     * is exactly one reader thread per worker process. */
+    static uint8_t buf[VNC_IPC_MAX_PAYLOAD];
     for (;;) {
         uint32_t type = 0, len = 0;
-        uint8_t buf[VNC_IPC_MAX_PAYLOAD];
         int r = vnc_channel_recv(&w->ch, &type, buf, sizeof(buf), &len);
         if (r <= 0) {         /* EOF or malformed => tear down */
             w->running = 0;
@@ -355,13 +368,21 @@ static int worker_run(worker *w, const char *host, int port,
 #endif
 
     while (w->running) {
-        int n = vnc_client_pump(w->client, 100000); /* 100 ms, unlocked wait */
+        /* Wait unlocked (so input sends aren't blocked during the idle wait),
+         * then process the message UNDER api_lock so a server read (which may
+         * decrypt TLS) never races an input write (which encrypts TLS) on the
+         * same session. This serialises ALL libvncclient socket/TLS access. */
+        int n = vnc_client_wait(w->client, 100000); /* 100 ms */
         if (n < 0)
             break;
         if (n > 0) {
             mtx_lock(&w->api_lock);
-            vnc_client_request_update(w->client, true);
+            int r = vnc_client_handle_message(w->client);
+            if (r == 0)
+                vnc_client_request_update(w->client, true);
             mtx_unlock(&w->api_lock);
+            if (r != 0)
+                break;
         }
     }
     w->running = 0;

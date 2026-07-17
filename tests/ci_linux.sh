@@ -9,6 +9,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Wait until a TCP port accepts connections (avoids racing server startup).
+wait_port() {
+  local host="$1" port="$2" tries="${3:-40}"
+  for _ in $(seq "$tries"); do
+    if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then exec 3>&- 3<&-; return 0; fi
+    sleep 0.25
+  done
+  echo "wait_port: $host:$port never came up"; return 1
+}
+
 BUILD=build/linux-asan
 echo "== configure + build ($BUILD) =="
 cmake --preset linux-asan >/dev/null
@@ -29,7 +39,7 @@ chmod 600 "$PASS_DIR/passwd"
 Xvnc :19 -geometry 800x600 -depth 24 -SecurityTypes VncAuth \
   -rfbauth "$PASS_DIR/passwd" -localhost >/tmp/ci_xvnc.log 2>&1 &
 XVNC_PID=$!
-sleep 3
+wait_port 127.0.0.1 5919
 
 echo "== cross-process encoding matrix (worker + IPC + shm vs direct client) =="
 export VNC_PASSWORD=ci-secret

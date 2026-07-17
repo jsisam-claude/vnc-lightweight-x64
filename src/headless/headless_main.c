@@ -153,8 +153,7 @@ int main(int argc, char **argv)
     /* Split HOST[:PORT]; default RFB port 5900. */
     char host[256];
     int port = 5900;
-    strncpy(host, target, sizeof(host) - 1);
-    host[sizeof(host) - 1] = '\0';
+    snprintf(host, sizeof(host), "%s", target); /* portable + safe (no strncpy) */
     char *colon = strrchr(host, ':');
     if (colon) {
         *colon = '\0';

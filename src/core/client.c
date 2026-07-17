@@ -367,6 +367,20 @@ int vnc_client_pump(vnc_client *c, unsigned timeout_us)
     return 1;
 }
 
+int vnc_client_wait(vnc_client *c, unsigned timeout_us)
+{
+    if (!c->rfb)
+        return -1;
+    return WaitForMessage(c->rfb, timeout_us);
+}
+
+int vnc_client_handle_message(vnc_client *c)
+{
+    if (!c->rfb)
+        return -1;
+    return HandleRFBServerMessage(c->rfb) ? 0 : -1;
+}
+
 bool vnc_client_request_update(vnc_client *c, bool incremental)
 {
     if (!c->rfb)

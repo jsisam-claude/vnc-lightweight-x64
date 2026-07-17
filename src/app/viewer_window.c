@@ -109,8 +109,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         for (UINT i = 0; i < count; i++) {
             wchar_t wpath[MAX_PATH];
             if (DragQueryFileW(drop, i, wpath, MAX_PATH)) {
-                char path[MAX_PATH * 2];
-                WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, sizeof(path), NULL, NULL);
+                char path[MAX_PATH * 3 + 1]; /* worst-case UTF-8 of MAX_PATH wchars */
+                int n = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path,
+                                            sizeof(path), NULL, NULL);
+                if (n <= 0)
+                    continue; /* conversion failed: skip (don't read uninit buf) */
                 char safe[FT_MAX_NAME + 1];
                 if (ft_sanitize_remote_name(ft_basename(path), safe, sizeof(safe)))
                     valid++;
@@ -416,6 +419,17 @@ void viewer_drain_messages(HWND hwnd)
     }
 }
 
+/* Post a heap blob to the UI thread, freeing it if the post fails (e.g. the
+ * message queue is full). Without this a hostile worker flooding events could
+ * leak the trusted UI's heap without bound. */
+static void post_blob(HWND hwnd, UINT msg, void *blob)
+{
+    if (!blob)
+        return;
+    if (!PostMessageW(hwnd, msg, 0, (LPARAM)blob))
+        free(blob);
+}
+
 /* Reader thread: consume worker events and marshal them to the UI thread. */
 DWORD WINAPI viewer_reader_thread(LPVOID arg)
 {
@@ -437,26 +451,38 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
         case VNC_EVT_RESIZE:
             if (len == sizeof(vnc_ipc_resize)) {
                 vnc_ipc_resize *rz = (void *)buf;
-                PostMessageW(app->hwnd, WM_APP_RESIZE, rz->width, rz->height);
+                uint32_t w = rz->width, h = rz->height;
+                /* The UI must NOT trust the worker's dimensions: reject anything
+                 * that would not fit the shared mapping, or StretchDIBits would
+                 * read past it in this trusted process. A violation means a
+                 * hostile/broken worker — fail closed. (Bound w,h before the
+                 * multiply so it cannot overflow size_t.) */
+                if (w == 0 || h == 0 || w > 16384 || h > 16384 ||
+                    (size_t)w * (size_t)h * 4u > vnc_shm_capacity(app->shm)) {
+                    diag_logf(DIAG_ERROR,
+                              "rejecting bad resize %ux%u (exceeds framebuffer)", w, h);
+                    goto teardown;
+                }
+                PostMessageW(app->hwnd, WM_APP_RESIZE, w, h);
             }
             break;
         case VNC_EVT_UPDATE:
             if (len == sizeof(vnc_ipc_rect)) {
                 vnc_ipc_rect *copy = malloc(sizeof(*copy));
                 if (copy) { *copy = *(vnc_ipc_rect *)buf;
-                    PostMessageW(app->hwnd, WM_APP_UPDATE, 0, (LPARAM)copy); }
+                    post_blob(app->hwnd, WM_APP_UPDATE, copy); }
             }
             break;
         case VNC_EVT_CUT_TEXT: {
             uint8_t *blob = malloc(4 + (size_t)len);
             if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
-                PostMessageW(app->hwnd, WM_APP_CUTTEXT, 0, (LPARAM)blob); }
+                post_blob(app->hwnd, WM_APP_CUTTEXT, blob); }
             break;
         }
         case VNC_EVT_CURSOR: {
             uint8_t *blob = malloc(4 + (size_t)len);
             if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
-                PostMessageW(app->hwnd, WM_APP_CURSOR, 0, (LPARAM)blob); }
+                post_blob(app->hwnd, WM_APP_CURSOR, blob); }
             break;
         }
         case VNC_EVT_LED:
@@ -505,6 +531,7 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
             break;
         }
     }
+teardown:
     /* Signal disconnect so the UI can close. */
     PostMessageW(app->hwnd, WM_APP_STATUS, VNC_STATUS_DISCONNECTED, 0);
     return 0;

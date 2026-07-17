@@ -9,6 +9,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Wait until a TCP port accepts connections (avoids racing server startup).
+wait_port() {
+  local host="$1" port="$2" tries="${3:-40}"
+  for _ in $(seq "$tries"); do
+    if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then exec 3>&- 3<&-; return 0; fi
+    sleep 0.25
+  done
+  echo "wait_port: $host:$port never came up"; return 1
+}
+
 BUILD=build/linux-tls
 echo "== configure + build ($BUILD, GnuTLS) =="
 cmake --preset linux-tls >/dev/null
@@ -48,7 +58,7 @@ qemu-system-x86_64 -display none -m 128 \
   -object "tls-creds-x509,id=tls0,dir=$CERT,endpoint=server,verify-peer=no" \
   -vnc 127.0.0.1:13,tls-creds=tls0 >/tmp/ci_qemu.log 2>&1 &
 QEMU_PID=$!
-sleep 3
+wait_port 127.0.0.1 5913
 
 export ASAN_OPTIONS=detect_leaks=0 # vendored GnuTLS leaks at exit (test-only backend)
 # Capture output into a variable (not a pipeline): vnctest may exit non-zero even

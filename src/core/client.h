@@ -102,8 +102,15 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port);
 
 /* Wait up to timeout_us microseconds for server data, then process one batch of
  * server messages. Returns:  1 processed, 0 timed out (nothing to do),
- * -1 on error/disconnect. */
+ * -1 on error/disconnect. Single-threaded callers only (see wait/handle). */
 int vnc_client_pump(vnc_client *c, unsigned timeout_us);
+
+/* Split form of pump() for multi-threaded callers: wait UNLOCKED for data, then
+ * handle the message UNDER THE SAME LOCK used for input sends, so a TLS read and
+ * a TLS write never touch the session concurrently. wait() returns >0 ready,
+ * 0 timeout, <0 error; handle() returns 0 ok, -1 error/disconnect. */
+int vnc_client_wait(vnc_client *c, unsigned timeout_us);
+int vnc_client_handle_message(vnc_client *c);
 
 /* Request a framebuffer update (incremental or full). */
 bool vnc_client_request_update(vnc_client *c, bool incremental);
