@@ -21,11 +21,32 @@
       }
     },
     {
+      "name": "linux-tls",
+      "displayName": "Linux TLS reference (GnuTLS backend + ASan)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-tls",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VNC_WITH_GNUTLS": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
       "name": "vs2022-x64",
       "displayName": "Visual Studio 2022, x64 (Windows product)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/vs2022-x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "win-asan",
+      "displayName": "Windows MSVC + AddressSanitizer (Debug)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/win-asan",
+      "cacheVariables": { "CMAKE_C_FLAGS": "/fsanitize=address" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
@@ -40,7 +61,9 @@
   "buildPresets": [
     { "name": "linux-test",  "configurePreset": "linux-test" },
     { "name": "linux-asan",  "configurePreset": "linux-asan" },
+    { "name": "linux-tls",   "configurePreset": "linux-tls" },
     { "name": "vs2022-x64",  "configurePreset": "vs2022-x64" },
+    { "name": "win-asan",    "configurePreset": "win-asan" },
     { "name": "win-ninja-release", "configurePreset": "win-ninja-release" }
   ]
 }

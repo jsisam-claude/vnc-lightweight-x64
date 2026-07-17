@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  linux:
+    name: Linux (ASan + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build clang \
+            libgnutls28-dev gnutls-bin \
+            tigervnc-standalone-server tigervnc-common \
+            qemu-system-x86
+      - name: Unit tests + cross-process encoding matrix (ASan/UBSan)
+        run: bash tests/ci_linux.sh
+      - name: VeNCrypt / X509 TLS verification (GnuTLS ref vs QEMU)
+        run: bash tests/ci_tls.sh
+
+  linux-fuzz:
+    name: Linux (audio parser fuzz, smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build clang libclang-rt-dev
+      - name: Build + short fuzz run of the QEMU audio parser
+        run: |
+          cmake -S . -B build/fuzz -G Ninja -DENABLE_FUZZ=ON \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/fuzz --target qemu_audio_fuzz
+          mkdir -p tests/fuzz/corpus/audio
+          ./build/fuzz/qemu_audio_fuzz -max_total_time=60 tests/fuzz/corpus/audio
+
+  windows:
+    name: Windows (MSVC compile — Win32 + SChannel + sandbox)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (VS 2022, x64)
+        run: cmake --preset vs2022-x64
+      - name: Build product (vncviewer + vncworker, hardened)
+        run: cmake --build build/vs2022-x64 --config Release
+      # This is the first real compile of tls_schannel.c, sandbox_win32.c and the
+      # rest of the Win32 UI on a Windows toolchain. Runtime validation against a
+      # live QEMU is still a manual step (see docs/TESTING.md).

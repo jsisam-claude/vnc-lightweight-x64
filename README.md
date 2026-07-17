@@ -70,9 +70,17 @@ in it. Details live in the project plan and in code comments.
 
 ### Transport posture
 
-Until the TLS milestone (M6) lands, the session uses plain RFB (VNC
-Authentication is a weak DES challenge over plaintext). Use it over localhost or
-an SSH tunnel, or on a trusted network, until VeNCrypt/X509 support ships.
+VeNCrypt / X509 TLS (M6) is the recommended transport: pass `--ca <bundle.pem>`
+to verify the server certificate against your CA. The shipped SChannel backend
+accepts **X509 VeNCrypt subtypes only** — anonymous TLS (VeNCrypt `TLS*`
+subtypes and RFB security type 18) is refused, since it provides no
+man-in-the-middle protection — and fails closed if the certificate does not
+verify (no trust-on-first-use). Without `--ca`, or against a server offering no
+X509 subtype, the TLS handshake is rejected.
+
+Plain RFB (no `--ca`, non-TLS server) uses VNC Authentication — a weak DES
+challenge over plaintext. Use it only over localhost, an SSH tunnel, or a
+trusted network.
 
 ## Licensing
 
