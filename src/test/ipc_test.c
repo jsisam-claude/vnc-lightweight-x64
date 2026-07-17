@@ -47,11 +47,13 @@ int main(int argc, char **argv)
     const char *worker_path = "./vncworker";
     long want_updates = 3;
     int want_audio = 0;
+    int verbose = 0;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--encodings") && i + 1 < argc) encodings = argv[++i];
         else if (!strcmp(argv[i], "--worker") && i + 1 < argc) worker_path = argv[++i];
         else if (!strcmp(argv[i], "--updates") && i + 1 < argc) want_updates = strtol(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--audio")) want_audio = 1;
+        else if (!strcmp(argv[i], "--verbose")) verbose = 1;
     }
 
     char host[256];
@@ -167,6 +169,12 @@ int main(int argc, char **argv)
             /* keep frames flowing */
             { vnc_ipc_update_req u = { 1 };
               vnc_channel_send(&ch, VNC_CMD_REQUEST_UPDATE, &u, sizeof(u)); }
+            break;
+        case VNC_EVT_LOG:
+            if (verbose && len >= 1) {
+                uint32_t mlen = len - 1;
+                fprintf(stderr, "[worker:%u] %.*s\n", buf[0], (int)mlen, buf + 1);
+            }
             break;
         case VNC_EVT_AUDIO_FORMAT:
             audio_format_seen = 1;

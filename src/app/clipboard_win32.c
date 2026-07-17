@@ -7,6 +7,7 @@
  * defensively without assuming NUL-termination.
  */
 #include "app/app.h"
+#include "app/diag.h"
 
 void clipboard_from_server(ViewerApp *app, const char *text, unsigned len)
 {
@@ -43,6 +44,8 @@ void clipboard_from_server(ViewerApp *app, const char *text, unsigned len)
         GlobalFree(h);
     else
         app->ignore_clip_update = TRUE; /* suppress the echo back to the server */
+    diag_logf(DIAG_DEBUG, "clipboard server->local: %u bytes (%s)", len,
+              placed ? "set" : "failed"); /* length only, never the text */
 }
 
 /* Read the local clipboard (Unicode text) and forward it to the server as a
@@ -67,6 +70,8 @@ void clipboard_to_server(ViewerApp *app)
                     /* -1 to drop the NUL terminator from the wire length. */
                     vnc_channel_send(&app->ch, VNC_CMD_CUT_TEXT, utf8,
                                      (uint32_t)(need - 1));
+                    diag_logf(DIAG_DEBUG, "clipboard local->server: %d bytes",
+                              need - 1); /* length only, never the text */
                     free(utf8);
                 }
             }

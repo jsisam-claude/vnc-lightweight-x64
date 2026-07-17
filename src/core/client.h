@@ -77,6 +77,12 @@ typedef struct vnc_client vnc_client;
 /* Create a client requesting 32bpp true colour. Returns NULL on OOM. */
 vnc_client *vnc_client_create(const vnc_client_delegate *delegate);
 
+/* Route libvncclient's process-global log (rfbClientLog/Err) to a sink instead
+ * of stderr, so a sandboxed embedder can forward the protocol/TLS timeline for
+ * diagnostics. Pass NULL to restore the stderr default. Process-global. */
+void vnc_client_set_global_log(void (*fn)(void *, vnc_log_level, const char *),
+                               void *user);
+
 /* Override the negotiated encodings (space-separated, libvncclient syntax),
  * e.g. "zrle hextile copyrect raw". Must be called before vnc_client_connect.
  * The string is copied. */

@@ -243,6 +243,7 @@ if(WIN32)
     ${CMAKE_SOURCE_DIR}/src/app/clipboard_win32.c
     ${CMAKE_SOURCE_DIR}/src/app/audio_waveout.c
     ${CMAKE_SOURCE_DIR}/src/app/sandbox_win32.c
+    ${CMAKE_SOURCE_DIR}/src/app/diag.c
   )
   target_include_directories(vncviewer PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})

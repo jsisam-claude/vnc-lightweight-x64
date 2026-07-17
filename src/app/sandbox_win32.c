@@ -22,6 +22,7 @@
  * the protocol core). See docs/TESTING.md, M2 checklist.
  */
 #include "app/app.h"
+#include "app/diag.h"
 
 #include <userenv.h>
 #include <aclapi.h>
@@ -116,13 +117,18 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     SID_AND_ATTRIBUTES cap = {0};
     PSID inet_sid = NULL;
 
+    diag_logf(DIAG_INFO, "sandbox: creating AppContainer profile");
     ac_sid = create_appcontainer_sid();
     if (!ac_sid) {
+        diag_win32("sandbox: CreateAppContainerProfile", GetLastError());
         fprintf(stderr, "sandbox: cannot create AppContainer profile (err %lu)\n",
                 GetLastError());
 #ifndef VNC_ALLOW_UNSANDBOXED
         return FALSE; /* fail closed */
 #endif
+        diag_logf(DIAG_WARN, "sandbox: continuing UNSANDBOXED (debug build)");
+    } else {
+        diag_logf(DIAG_INFO, "sandbox: AppContainer SID acquired");
     }
 
     /* Two anonymous pipes => a duplex channel. Worker ends are inheritable. */
@@ -248,14 +254,22 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi = {0};
 
+    diag_logf(DIAG_INFO, "sandbox: launching worker (ACG/CIG/no-win32k/CFG/CET)");
     if (!CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE,
                         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
                         NULL, exe_dir, &si.StartupInfo, &pi)) {
-        fprintf(stderr, "sandbox: CreateProcess failed (err %lu)\n", GetLastError());
+        DWORD e = GetLastError();
+        diag_win32("sandbox: CreateProcess (worker)", e);
+        diag_logf(DIAG_ERROR, "sandbox: worker spawn failed \xE2\x80\x94 if this is "
+                  "ERROR_ACCESS_DENIED/1058, check vncworker.exe built /guard:cf "
+                  "/CETCOMPAT and sits next to vncviewer.exe");
+        fprintf(stderr, "sandbox: CreateProcess failed (err %lu)\n", e);
         goto cleanup;
     }
     CloseHandle(pi.hThread);
     app->worker_process = pi.hProcess;
+    diag_logf(DIAG_INFO, "sandbox: worker started (pid=%lu)",
+              (unsigned long)pi.dwProcessId);
 
     /* UI keeps its own ends; the worker's ends are now the child's. */
     app->ch.wr = (vnc_handle)cmd_wr; cmd_wr = NULL;
@@ -263,6 +277,8 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     result = TRUE;
 
 cleanup:
+    if (!result)
+        diag_win32("sandbox: spawn failed at setup", GetLastError());
     if (cmd_rd) CloseHandle(cmd_rd);   /* child got its own inherited copy */
     if (evt_wr) CloseHandle(evt_wr);
     if (fbmap_inh) CloseHandle(fbmap_inh);
@@ -281,9 +297,16 @@ void sandbox_cleanup(ViewerApp *app)
     if (app->ch.wr) { CloseHandle((HANDLE)app->ch.wr); app->ch.wr = 0; }
     if (app->ch.rd) { CloseHandle((HANDLE)app->ch.rd); app->ch.rd = 0; }
     if (app->worker_process) {
-        /* Ask nicely first (SHUTDOWN was sent by the caller), then ensure exit. */
-        if (WaitForSingleObject(app->worker_process, 2000) == WAIT_TIMEOUT)
+        /* Ask nicely first (SHUTDOWN was sent by the caller), then ensure exit.
+         * The worker's exit code is a useful triage signal — e.g. a nonzero code
+         * with no prior "connected" status often means it died at startup. */
+        DWORD code = 0;
+        if (WaitForSingleObject(app->worker_process, 2000) == WAIT_TIMEOUT) {
+            diag_logf(DIAG_WARN, "worker did not exit; terminating");
             TerminateProcess(app->worker_process, 1);
+        } else if (GetExitCodeProcess(app->worker_process, &code)) {
+            diag_logf(DIAG_INFO, "worker exited (code=%lu)", (unsigned long)code);
+        }
         CloseHandle(app->worker_process);
         app->worker_process = NULL;
     }

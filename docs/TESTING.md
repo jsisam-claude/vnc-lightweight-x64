@@ -116,6 +116,36 @@ memory-safety findings (only GnuTLS exit leaks, which the SChannel build does no
 have). On Windows, repeat against QEMU using `--ca` with a PEM bundle and confirm
 the SChannel path rejects a wrong/expired/hostname-mismatched cert.
 
+## Collecting a debug log (Windows)
+
+If something doesn't work, run with diagnostics on and share the log:
+
+```
+vncviewer.exe HOST:PORT --debug        # or set VNC_DEBUG=1
+```
+
+A single timestamped log is written to `%TEMP%\vnc-lightweight-*.log` (the exact
+path is shown in a message box on exit). It captures the full timeline:
+
+- UI milestones: sandbox spawn steps, worker pid, first frame painted, resize,
+  status changes, audio format, cursor, clipboard **lengths**;
+- the worker's libvncclient/TLS protocol log (version handshake, security type,
+  `TLS handshake done`, certificate trust result, pixel format, disconnect);
+- Win32/SSPI error codes with their text (via `diag_win32`), and the worker's
+  exit code.
+
+**Privacy:** the log never contains passwords, clipboard text, or screen/pixel
+contents — only lengths, dimensions, protocol milestones, and status codes. It
+does include the server `host:port` and the server-reported desktop name (needed
+to diagnose connection issues); redact those lines before sharing if you prefer.
+The header states this in the file itself.
+
+Common first-run signals in the log:
+- `sandbox: CreateProcess ... error 1058/5` → the worker was rejected; verify
+  `vncworker.exe` is next to `vncviewer.exe` and built `/guard:cf /CETCOMPAT`.
+- `status: connect-failed` with no server lines → network/port/TLS before RFB.
+- `Server certificate not trusted` → wrong/missing `--ca` bundle.
+
 ## Windows manual checklist (per milestone)
 
 Build with Visual Studio Enterprise 2022 (open the folder; pick the

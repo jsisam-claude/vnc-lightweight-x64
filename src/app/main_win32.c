@@ -8,6 +8,7 @@
  */
 #include "app/app.h"
 #include "app/audio_waveout.h"
+#include "app/diag.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -210,6 +211,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
     }
     ZeroMemory(&g_app, sizeof(g_app));
     parse_target(argv[1], &g_app);
+    BOOL debug = FALSE;
     for (int i = 2; i < argc; i++) {
         if (!wcscmp(argv[i], L"--view-only"))
             g_app.view_only = TRUE;
@@ -221,12 +223,27 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             g_app.scale_mode = 1;
         else if (!wcscmp(argv[i], L"--scale-1to1"))
             g_app.scale_mode = 2;
+        else if (!wcscmp(argv[i], L"--debug"))
+            debug = TRUE;
         else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc)
             WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
                                 sizeof(g_app.ca_file), NULL, NULL);
     }
     LocalFree(argv);
     g_app.hinst = hinst; /* scale_mode defaults to 0 = fit (aspect-preserving) */
+
+    /* Diagnostics (opt-in). The invocation summary is redacted: the target and
+     * flags only, never a password (passwords never appear on argv). */
+    char host_ascii[256];
+    WideCharToMultiByte(CP_UTF8, 0, g_app.host, -1, host_ascii, sizeof(host_ascii),
+                        NULL, NULL);
+    char invocation[512];
+    _snprintf_s(invocation, sizeof(invocation), _TRUNCATE,
+        "host=%s port=%d view_only=%d audio=%d fullscreen=%d ca=%s scale=%d",
+        host_ascii, g_app.port, g_app.view_only, g_app.want_audio,
+        g_app.want_fullscreen, g_app.ca_file[0] ? "yes" : "no", g_app.scale_mode);
+    diag_init(debug, invocation);
+    diag_logf(DIAG_INFO, "vncviewer starting (%s)", invocation);
 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -267,5 +284,18 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
     app_stop_session(&g_app);
     vnc_shm_close(g_app.shm);
     WSACleanup();
+
+    if (diag_enabled()) {
+        diag_logf(DIAG_INFO, "vncviewer exit");
+        wchar_t wpath[MAX_PATH * 2], note[MAX_PATH * 2 + 128];
+        MultiByteToWideChar(CP_UTF8, 0, diag_logpath(), -1, wpath, MAX_PATH * 2);
+        _snwprintf_s(note, MAX_PATH * 2 + 128, _TRUNCATE,
+            L"Diagnostic log written to:\n\n%s\n\n"
+            L"It contains no passwords, clipboard text, or screen contents.",
+            wpath);
+        diag_close();
+        MessageBoxW(NULL, note, L"VNC Lightweight \xE2\x80\x94 debug log",
+                    MB_OK | MB_ICONINFORMATION);
+    }
     return 0;
 }

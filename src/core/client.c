@@ -229,12 +229,44 @@ static rfbClientProtocolExtension audio_extension = {
 
 /* ---- global logger (rfbClientLog/Err are process-global variadic hooks) --- */
 
-static void global_log(const char *fmt, ...)
+/* libvncclient logs through the process-global rfbClientLog/Err (no client
+ * context). We route them to an optional sink so the sandboxed worker can
+ * forward the protocol/TLS timeline to the diagnostic log instead of losing it
+ * to a null stderr. Falls back to stderr when no sink is set (headless test). */
+static void (*g_log_fn)(void *, vnc_log_level, const char *);
+static void *g_log_user;
+
+void vnc_client_set_global_log(void (*fn)(void *, vnc_log_level, const char *),
+                               void *user)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
+    g_log_fn = fn;
+    g_log_user = user;
+}
+
+static void emit_global(vnc_log_level lvl, const char *fmt, va_list ap)
+{
+    char buf[512];
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n < 0)
+        return;
+    size_t len = strnlen(buf, sizeof(buf));
+    while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+        buf[--len] = '\0';
+    if (len == 0)
+        return;
+    if (g_log_fn)
+        g_log_fn(g_log_user, lvl, buf);
+    else
+        fprintf(stderr, "%s\n", buf);
+}
+
+static void global_log_info(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt); emit_global(VNC_LOG_INFO, fmt, ap); va_end(ap);
+}
+static void global_log_err(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt); emit_global(VNC_LOG_ERROR, fmt, ap); va_end(ap);
 }
 
 /* ---- public API -------------------------------------------------------- */
@@ -246,8 +278,8 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
         return NULL;
     c->delegate = *delegate;
 
-    rfbClientLog = global_log;
-    rfbClientErr = global_log;
+    rfbClientLog = global_log_info;
+    rfbClientErr = global_log_err;
 
     /* Register the QEMU audio extension once for the process. */
     static bool audio_registered = false;

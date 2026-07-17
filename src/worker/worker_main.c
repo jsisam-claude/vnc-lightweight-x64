@@ -14,6 +14,7 @@
  * emits events) and single-reader (reader thread consumes commands), so it
  * needs no lock of its own.
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,6 +156,19 @@ static void w_on_log(void *user, vnc_log_level level, const char *msg)
                       msg, (uint32_t)strlen(msg));
 }
 
+/* Emit a worker milestone over the same log channel (for the diagnostic log). */
+static void w_diag(worker *w, vnc_log_level level, const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return;
+    w_on_log(w, level, buf);
+}
+
 /* Synchronous password round-trip. Runs on the main thread during connect,
  * before the reader thread exists, so it may read the channel directly. */
 static char *w_get_password(void *user)
@@ -292,6 +306,9 @@ static int worker_run(worker *w, const char *host, int port,
     w->client = vnc_client_create(&d);
     if (!w->client)
         return 1;
+    /* Route libvncclient's global log (protocol + TLS timeline) to the UI's
+     * diagnostic channel; w_on_log matches the sink signature. */
+    vnc_client_set_global_log(w_on_log, w);
     if (encodings && encodings[0])
         vnc_client_set_encodings(w->client, encodings);
     if (ca_file && ca_file[0])
@@ -301,6 +318,9 @@ static int worker_run(worker *w, const char *host, int port,
     vnc_ipc_hello hello = { VNC_IPC_MAGIC, VNC_IPC_VERSION };
     vnc_channel_send(&w->ch, VNC_EVT_HELLO, &hello, sizeof(hello));
 
+    w_diag(w, VNC_LOG_INFO, "worker: connecting (encodings=%s, ca=%s, view_only=%d)",
+           encodings && encodings[0] ? encodings : "default",
+           ca_file && ca_file[0] ? "yes" : "no", view_only);
     if (!vnc_client_connect(w->client, host, port)) {
         vnc_ipc_status st = { VNC_STATUS_CONNECT_FAILED };
         vnc_channel_send(&w->ch, VNC_EVT_STATUS, &st, sizeof(st));
@@ -321,6 +341,8 @@ static int worker_run(worker *w, const char *host, int port,
         vnc_channel_send(&w->ch, VNC_EVT_AUDIO_FORMAT, &cfg, sizeof(cfg));
         vnc_client_audio_enable(w->client, WORKER_AUDIO_FORMAT,
                                 WORKER_AUDIO_CHANNELS, WORKER_AUDIO_FREQ);
+        w_diag(w, VNC_LOG_INFO, "worker: audio requested (S16 %uch %uHz)",
+               WORKER_AUDIO_CHANNELS, WORKER_AUDIO_FREQ);
     }
     mtx_unlock(&w->api_lock);
 

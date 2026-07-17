@@ -9,6 +9,7 @@
  */
 #include "app/app.h"
 #include "app/audio_waveout.h"
+#include "app/diag.h"
 #include "core/ftpath.h"
 #include "ipc/protocol.h"
 
@@ -154,6 +155,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_APP_RESIZE:
+        diag_logf(DIAG_INFO, "framebuffer resize -> %dx%d", (int)wp, (int)lp);
         setup_dib(app, (int)wp, (int)lp);
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -208,6 +210,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_APP_STATUS:
+        diag_logf(DIAG_INFO, "status: %s",
+                  (int)wp == VNC_STATUS_CONNECTED ? "connected" :
+                  (int)wp == VNC_STATUS_AUTH_FAILED ? "auth-failed" :
+                  (int)wp == VNC_STATUS_CONNECT_FAILED ? "connect-failed" :
+                  "disconnected");
         if ((int)wp == VNC_STATUS_CONNECTED) {
             app->connected = TRUE;
         } else if ((int)wp == VNC_STATUS_DISCONNECTED ||
@@ -235,12 +242,18 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_PAINT: {
+        static int logged_first_frame = 0;
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc; GetClientRect(hwnd, &rc);
         int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
         if (app->fb_width > 0 && app->fb_height > 0 && app->shm) {
             RECT d = compute_dest_rect(app, cw, ch);
+            if (!logged_first_frame) {
+                logged_first_frame = 1;
+                diag_logf(DIAG_INFO, "first frame painted (%dx%d -> %dx%d)",
+                          app->fb_width, app->fb_height, cw, ch);
+            }
             /* Letterbox margins in black (only when the image doesn't fill). */
             if (d.left > 0 || d.top > 0 || d.right < cw || d.bottom < ch) {
                 HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -364,6 +377,7 @@ void viewer_set_cursor(ViewerApp *app, const uint8_t *blob, unsigned len)
         DestroyCursor(app->remote_cursor);
     app->remote_cursor = cur;
     SetCursor(cur);
+    diag_logf(DIAG_DEBUG, "cursor set %ux%u", w, h);
 }
 
 ATOM viewer_register_class(HINSTANCE hinst)
@@ -458,6 +472,9 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
                 if (app->audio) waveout_destroy(app->audio);
                 app->audio = waveout_create(a->sample_format, a->channels,
                                             a->frequency);
+                diag_logf(DIAG_INFO, "audio format fmt=%u ch=%u freq=%u waveOut=%s",
+                          a->sample_format, a->channels, a->frequency,
+                          app->audio ? "open" : "FAILED");
             }
             break;
         case VNC_EVT_AUDIO_DATA:
@@ -470,7 +487,19 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
             PostMessageW(app->hwnd, WM_APP_PWREQ, 0, 0);
             break;
         case VNC_EVT_LOG:
-            /* buf[0]=level, rest=message. Silently dropped for now. */
+            /* buf[0]=level (vnc_log_level), rest=message (not NUL-terminated).
+             * These carry the libvncclient/TLS protocol timeline — route them to
+             * the diagnostic log. */
+            if (diag_enabled() && len >= 1) {
+                char m[900];
+                uint32_t mlen = len - 1;
+                if (mlen >= sizeof(m)) mlen = sizeof(m) - 1;
+                memcpy(m, buf + 1, mlen);
+                m[mlen] = '\0';
+                /* vnc_log_level: 0=ERROR,1=WARN,2=INFO,3=DEBUG -> diag_level. */
+                diag_level dl = buf[0] <= DIAG_DEBUG ? (diag_level)buf[0] : DIAG_INFO;
+                diag_logf(dl, "worker: %s", m);
+            }
             break;
         default:
             break;
