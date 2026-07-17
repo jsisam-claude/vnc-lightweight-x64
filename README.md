@@ -30,6 +30,21 @@ the vendored protocol core builds and is proven against real servers.
       is server-gated — it needs a TightVNC/UltraVNC server in the guest; QEMU's
       VNC has no file channel — and remains to be implemented against such a
       server. See "File transfer" below.
+- **CI** — GitHub Actions: Linux ASan encoding matrix + TLS verification + audio
+      fuzz, and a Windows MSVC compile of the full Win32/SChannel/sandbox code.
+
+### Deliberately out of scope (for now)
+
+- **Tight encoding** — omitted on purpose to honor the minimal-dependencies
+  goal: libvncclient's Tight decoder is fully gated on libjpeg and uses its
+  `JCS_EXT` color spaces, so enabling it means vendoring ~40 files of
+  libjpeg-turbo. ZRLE / Hextile / Zlib already give QEMU good (lossless)
+  compression, so the dependency isn't worth it here. To add Tight later: vendor
+  libjpeg-turbo + the `turbojpeg.c` shim, define `LIBVNCSERVER_HAVE_LIBJPEG`,
+  and add `tight.c` + `turbojpeg.c` to the build.
+- **TightVNC file-transfer transport** — server-gated (needs a TightVNC/UltraVNC
+  guest server; QEMU has no file channel). The path-traversal defense is already
+  in place (`core/ftpath.c`).
 
 ## What it is / isn't
 
