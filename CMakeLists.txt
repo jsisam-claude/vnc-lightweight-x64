@@ -123,9 +123,16 @@ set_source_files_properties(${VENDOR_SOURCES} PROPERTIES
 # Control Flow Guard and CET shadow-stack mitigations ALWAYS_ON, so its image
 # MUST be built /guard:cf (and marked /CETCOMPAT) or CreateProcess refuses it.
 # Applied to both Windows executables via harden_windows_target().
+# /Qspectre needs the optional "MSVC Spectre-mitigated libraries" VS component
+# (else MSB8040). Opt-in so the build works out of the box; enable for hardened
+# release builds after installing that component:  -DVNC_SPECTRE=ON
+option(VNC_SPECTRE "Add /Qspectre (requires the MSVC Spectre-mitigated libs)" OFF)
 function(harden_windows_target tgt)
   if(MSVC)
-    target_compile_options(${tgt} PRIVATE /guard:cf /Qspectre)
+    target_compile_options(${tgt} PRIVATE /guard:cf)
+    if(VNC_SPECTRE)
+      target_compile_options(${tgt} PRIVATE /Qspectre)
+    endif()
     target_link_options(${tgt} PRIVATE
       /guard:cf /CETCOMPAT /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT)
   endif()

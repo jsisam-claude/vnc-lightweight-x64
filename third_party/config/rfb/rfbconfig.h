@@ -50,6 +50,12 @@
 
 /* ---------------------- Windows x64 (MSVC / clang-cl) ---------------------- */
 #define LIBVNCSERVER_HAVE_WS2TCPIP_H 1
+/* Use Win32 threading primitives. Required, not optional: with NO thread mode,
+ * the vendored threading.h expands MUTEX(x) to nothing, leaving a bare `;` as a
+ * struct member in rfbclient.h — which MSVC rejects (C2059) even though Clang
+ * tolerates it. CRITICAL_SECTION comes from windows.h (pulled in by winsock2.h).
+ * This matches how libvncclient's own Windows CI builds. */
+#define LIBVNCSERVER_HAVE_WIN32THREADS 1
 /* strdup exists as _strdup; upstream sockets code handles the WIN32 path. */
 #define LIBVNCSERVER_HAVE_GETHOSTBYNAME 1
 #define LIBVNCSERVER_HAVE_GETHOSTNAME 1
@@ -90,7 +96,8 @@
 
 /* ---- Deliberately NOT defined (feature policy above) ----
  * LIBVNCSERVER_HAVE_LIBJPEG, LIBVNCSERVER_HAVE_LIBPNG, LIBVNCSERVER_HAVE_LZO,
- * LIBVNCSERVER_HAVE_LIBPTHREAD, LIBVNCSERVER_HAVE_WIN32THREADS,
+ * LIBVNCSERVER_HAVE_LIBPTHREAD (Linux uses no-op mutexes; single-threaded test),
+ * LIBVNCSERVER_HAVE_WIN32THREADS (defined above for _WIN32 only),
  * LIBVNCSERVER_HAVE_GNUTLS, LIBVNCSERVER_HAVE_LIBSSL,
  * LIBVNCSERVER_HAVE_LIBGCRYPT, LIBVNCSERVER_HAVE_SASL,
  * LIBVNCSERVER_WITH_WEBSOCKETS, LIBVNCSERVER_IPv6,
