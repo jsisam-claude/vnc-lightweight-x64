@@ -160,41 +160,46 @@ function(attach_tls tgt)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# vnctest: portable headless verification client (both OSes; ASan target here).
+# SINGLE-EXECUTABLE MODEL
+#   On Windows the product ships as ONE vncviewer.exe with three modes selected
+#   by the command line (default UI / --worker sandboxed decoder / --headless
+#   diagnostic). The worker and headless entry points (vnc_worker_main /
+#   vnc_headless_main) are compiled INTO vncviewer; the GUI DLLs are delay-loaded
+#   so the --worker process never loads user32/gdi32 and keeps the no-win32k
+#   confinement (see src/app/modes.h, sandbox_win32.c).
+#
+#   On Linux/CI the SAME entry points build as the standalone `vnctest` and
+#   `vncworker` executables (via thin main() shims guarded by the *_STANDALONE
+#   defines), which the headless matrix and ipc_test harness spawn.
 # ---------------------------------------------------------------------------
-add_executable(vnctest
-  ${VENDOR_SOURCES}
-  ${CORE_SOURCES}
-  ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c
-)
-target_include_directories(vnctest PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
-target_compile_options(vnctest PRIVATE ${OUR_WARN_FLAGS})
-attach_tls(vnctest)
 
-if(WIN32)
-  target_link_libraries(vnctest PRIVATE ws2_32)
-  target_compile_definitions(vnctest PRIVATE WIN32_LEAN_AND_MEAN)
-endif()
+# vnctest / vncworker: standalone binaries for Linux verification only. On
+# Windows their code lives inside vncviewer.exe as --headless / --worker.
+if(NOT WIN32)
+  add_executable(vnctest
+    ${VENDOR_SOURCES}
+    ${CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c
+  )
+  target_include_directories(vnctest PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(vnctest PRIVATE ${OUR_WARN_FLAGS})
+  target_compile_definitions(vnctest PRIVATE VNC_HEADLESS_STANDALONE)
+  attach_tls(vnctest)
 
-# ---------------------------------------------------------------------------
-# vncworker: the untrusted decoder process. Contains all RFB-parsing code.
-# ---------------------------------------------------------------------------
-add_executable(vncworker
-  ${VENDOR_SOURCES}
-  ${CORE_SOURCES}
-  ${IPC_SOURCES}
-  ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c
-)
-target_include_directories(vncworker PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
-target_compile_options(vncworker PRIVATE ${OUR_WARN_FLAGS})
-target_link_libraries(vncworker PRIVATE Threads::Threads)
-attach_tls(vncworker)
-if(WIN32)
-  target_link_libraries(vncworker PRIVATE ws2_32)
-  target_compile_definitions(vncworker PRIVATE WIN32_LEAN_AND_MEAN)
-  harden_windows_target(vncworker) # required for the STRICT-CFG spawn to succeed
-elseif(UNIX AND NOT APPLE)
-  target_link_libraries(vncworker PRIVATE rt) # shm_open
+  add_executable(vncworker
+    ${VENDOR_SOURCES}
+    ${CORE_SOURCES}
+    ${IPC_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c
+  )
+  target_include_directories(vncworker PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(vncworker PRIVATE ${OUR_WARN_FLAGS})
+  target_compile_definitions(vncworker PRIVATE VNC_WORKER_STANDALONE)
+  target_link_libraries(vncworker PRIVATE Threads::Threads)
+  attach_tls(vncworker)
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(vncworker PRIVATE rt) # shm_open
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -241,12 +246,20 @@ if(ENABLE_FUZZ)
 endif()
 
 # ---------------------------------------------------------------------------
-# vncviewer: the trusted UI/broker (Windows product). Deliberately does NOT
-# link the vendored RFB decoders — all parsing lives in vncworker. Added with
-# the Win32 shell sources below.
+# vncviewer: the Windows product — the SINGLE executable. It contains both the
+# trusted UI/broker AND (compiled in, but only ever executed in the sandboxed
+# --worker child) the vendored RFB decoders + worker loop, plus the --headless
+# diagnostic client. wWinMain dispatches on the command line.
+#
+# The GUI DLLs (user32/gdi32/comdlg32/shell32/winmm/userenv) are DELAY-LOADED:
+# the --worker process never calls into them, so they are never mapped and the
+# win32k-syscall-disable / ACG / CIG mitigations applied to the worker hold.
+# (The mode dispatch itself avoids shell32 — see cmdline_to_wargv.)
 # ---------------------------------------------------------------------------
 if(WIN32)
   add_executable(vncviewer WIN32
+    ${VENDOR_SOURCES}
+    ${CORE_SOURCES}
     ${IPC_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/core/ftpath.c
     ${CMAKE_SOURCE_DIR}/src/app/main_win32.c
@@ -256,10 +269,21 @@ if(WIN32)
     ${CMAKE_SOURCE_DIR}/src/app/audio_waveout.c
     ${CMAKE_SOURCE_DIR}/src/app/sandbox_win32.c
     ${CMAKE_SOURCE_DIR}/src/app/diag.c
+    ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c   # --worker mode (in-process)
+    ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c # --headless mode
   )
-  target_include_directories(vncviewer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(vncviewer PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
   target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})
   target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-  target_link_libraries(vncviewer PRIVATE user32 gdi32 ws2_32 shell32 comdlg32 advapi32 userenv winmm)
-  harden_windows_target(vncviewer)
+  # Always-loaded imports (safe in the no-win32k worker): winsock, security,
+  # crypto (SChannel TLS), advapi32 (SIDs/ACLs are UI-only but the DLL is
+  # win32k-free). GUI DLLs are delay-loaded so the worker never maps them.
+  target_link_libraries(vncviewer PRIVATE
+    ws2_32 advapi32 secur32 crypt32 Threads::Threads
+    user32 gdi32 shell32 comdlg32 userenv winmm delayimp)
+  target_link_options(vncviewer PRIVATE
+    /DELAYLOAD:user32.dll /DELAYLOAD:gdi32.dll /DELAYLOAD:shell32.dll
+    /DELAYLOAD:comdlg32.dll /DELAYLOAD:userenv.dll /DELAYLOAD:winmm.dll)
+  attach_tls(vncviewer)               # SChannel VeNCrypt/X509 backend + defs
+  harden_windows_target(vncviewer)    # /guard:cf /CETCOMPAT so the CFG/CET spawn works
 endif()

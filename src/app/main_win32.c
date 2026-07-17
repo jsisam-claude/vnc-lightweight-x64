@@ -9,8 +9,9 @@
 #include "app/app.h"
 #include "app/audio_waveout.h"
 #include "app/diag.h"
+#include "app/modes.h"
 
-#include <shellapi.h>
+#include <commdlg.h>   /* GetOpenFileNameW (delay-loaded: UI mode only) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,6 +186,235 @@ void app_stop_session(ViewerApp *app)
     app->connected = FALSE;
 }
 
+/* ---- single-executable mode dispatch ------------------------------------- */
+/*
+ * The product ships as ONE vncviewer.exe with three modes (see app/modes.h):
+ *   (default)   trusted UI/broker
+ *   --worker    sandboxed decoder child (the UI re-launches itself with this)
+ *   --headless  console diagnostic client (the Linux `vnctest`)
+ *
+ * The worker mode must NOT load user32/gdi32 (win32k is disabled by mitigation).
+ * The GUI DLLs are delay-loaded so they are never pulled in unless the UI calls
+ * them — which also means the mode dispatch itself may not use shell32
+ * (CommandLineToArgvW lives there and would drag in user32). We therefore parse
+ * the command line ourselves with the standard MSVCRT argv rules. */
+static wchar_t **cmdline_to_wargv(const wchar_t *cmd, int *argc_out)
+{
+    size_t len = wcslen(cmd);
+    /* Upper bounds: at most len+2 tokens; output chars <= len+1. */
+    wchar_t **argv = (wchar_t **)malloc((len + 2) * sizeof(wchar_t *));
+    wchar_t  *out  = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    if (!argv || !out) { free(argv); free(out); *argc_out = 0; return NULL; }
+
+    int argc = 0;
+    const wchar_t *p = cmd;
+    wchar_t *w = out;
+    while (*p) {
+        while (*p == L' ' || *p == L'\t') p++;   /* skip inter-arg whitespace */
+        if (!*p) break;
+        argv[argc++] = w;
+        int in_quotes = 0;
+        for (;;) {
+            unsigned nbs = 0;
+            while (*p == L'\\') { nbs++; p++; }
+            if (*p == L'"') {
+                /* 2n backslashes + " -> n backslashes, toggle quote; 2n+1 -> n
+                 * backslashes + literal ". */
+                while (nbs >= 2) { *w++ = L'\\'; nbs -= 2; }
+                if (nbs == 1) { *w++ = L'"'; p++; continue; }
+                in_quotes = !in_quotes;
+                p++;
+                continue;
+            }
+            while (nbs--) *w++ = L'\\';
+            if (!*p) break;
+            if (!in_quotes && (*p == L' ' || *p == L'\t')) break;
+            *w++ = *p++;
+        }
+        *w++ = 0;
+    }
+    argv[argc] = NULL;
+    *argc_out = argc;
+    return argv; /* single free(argv) + free(argv[0]) frees everything */
+}
+
+static void free_wargv(wchar_t **argv)
+{
+    if (argv) { free(argv[0]); free(argv); }
+}
+
+/* Convert a wide argv to a freshly-allocated UTF-8 char** (NULL-terminated) for
+ * the portable worker/headless entry points. */
+static char **wargv_to_utf8(wchar_t **wargv, int argc)
+{
+    char **argv = (char **)calloc((size_t)argc + 1, sizeof(char *));
+    if (!argv) return NULL;
+    for (int i = 0; i < argc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        argv[i] = (char *)malloc(n > 0 ? (size_t)n : 1);
+        if (argv[i] && n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], n, NULL, NULL);
+        else if (argv[i])
+            argv[i][0] = '\0';
+    }
+    return argv;
+}
+
+static void free_utf8_argv(char **argv, int argc)
+{
+    if (!argv) return;
+    for (int i = 0; i < argc; i++) free(argv[i]);
+    free(argv);
+}
+
+/* Is `flag` present anywhere on the wide command line? Used for mode detection
+ * before any shell32/user32 code runs. */
+static BOOL wargv_has(wchar_t **wargv, int argc, const wchar_t *flag)
+{
+    for (int i = 1; i < argc; i++)
+        if (!wcscmp(wargv[i], flag)) return TRUE;
+    return FALSE;
+}
+
+/* Run a portable (char** argv) entry point with a UTF-8-converted argv. */
+static int run_utf8_mode(int (*entry)(int, char **), wchar_t **wargv, int argc)
+{
+    char **u8 = wargv_to_utf8(wargv, argc);
+    if (!u8) return 1;
+    int rc = entry(argc, u8);
+    free_utf8_argv(u8, argc);
+    return rc;
+}
+
+/* ---- connection dialog (shown when launched with no target) --------------- */
+
+static ViewerApp *g_conn_app;
+static BOOL        g_conn_ok;
+
+static LRESULT CALLBACK conn_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_COMMAND:
+        if (LOWORD(wp) == 206) { /* Browse for a CA file */
+            wchar_t file[1024] = L"";
+            OPENFILENAMEW ofn = {0};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"PEM certificates (*.pem;*.crt)\0*.pem;*.crt\0All files\0*.*\0";
+            ofn.lpstrFile = file;
+            ofn.nMaxFile = 1024;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            if (GetOpenFileNameW(&ofn))
+                SetWindowTextW(GetDlgItem(hwnd, 205), file);
+            return 0;
+        }
+        if (LOWORD(wp) == 1) { /* Connect */
+            ViewerApp *a = g_conn_app;
+            wchar_t hostbuf[256], portbuf[16];
+            GetWindowTextW(GetDlgItem(hwnd, 201), hostbuf, 256);
+            GetWindowTextW(GetDlgItem(hwnd, 202), portbuf, 16);
+            /* trim leading/trailing spaces on host; reject empty */
+            wchar_t *hs = hostbuf;
+            while (*hs == L' ') hs++;
+            if (!*hs) { MessageBoxW(hwnd, L"Please enter a host.",
+                                    L"VNC Lightweight", MB_OK | MB_ICONWARNING); return 0; }
+            wcsncpy_s(a->host, 256, hs, _TRUNCATE);
+            a->port = (int)wcstol(portbuf, NULL, 10);
+            wchar_t *colon = wcsrchr(a->host, L':'); /* accept host:port in host field */
+            if (colon) { *colon = 0; a->port = (int)wcstol(colon + 1, NULL, 10); }
+            if (a->port <= 0 || a->port > 65535) a->port = 5900;
+            a->view_only  = (IsDlgButtonChecked(hwnd, 203) == BST_CHECKED);
+            a->want_audio = (IsDlgButtonChecked(hwnd, 204) == BST_CHECKED);
+            wchar_t caw[1024] = L"";
+            GetWindowTextW(GetDlgItem(hwnd, 205), caw, 1024);
+            if (caw[0])
+                WideCharToMultiByte(CP_UTF8, 0, caw, -1, a->ca_file,
+                                    (int)sizeof(a->ca_file), NULL, NULL);
+            g_conn_ok = TRUE;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (LOWORD(wp) == 2) { g_conn_ok = FALSE; DestroyWindow(hwnd); return 0; }
+        break;
+    case WM_CLOSE:
+        g_conn_ok = FALSE; DestroyWindow(hwnd); return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* Modal connection prompt. Fills app->host/port/view_only/want_audio/ca_file.
+ * Returns TRUE if the user chose Connect. */
+static BOOL prompt_connection(ViewerApp *app, HINSTANCE hinst)
+{
+    static const wchar_t *cls = L"VncConnPrompt";
+    static BOOL registered = FALSE;
+    if (!registered) {
+        WNDCLASSEXW wc = {0};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = conn_proc;
+        wc.hInstance = hinst;
+        wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = cls;
+        RegisterClassExW(&wc);
+        registered = TRUE;
+    }
+
+    g_conn_app = app;
+    g_conn_ok = FALSE;
+
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, cls, L"Connect to VNC server",
+        WS_POPUPWINDOW | WS_CAPTION | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, 376, 276, NULL, NULL, hinst, NULL);
+    if (!dlg)
+        return FALSE;
+
+#define CONN_MK(klass, text, style, x, y, w, h, id) \
+    CreateWindowExW(0, klass, text, WS_CHILD | WS_VISIBLE | (style), \
+        x, y, w, h, dlg, (HMENU)(id), hinst, NULL)
+
+    CONN_MK(L"STATIC", L"Host:", 0, 14, 16, 56, 18, 0);
+    HWND host_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        74, 14, 274, 24, dlg, (HMENU)201, hinst, NULL);
+    CONN_MK(L"STATIC", L"Port:", 0, 14, 50, 56, 18, 0);
+    CONN_MK(L"EDIT", L"5900", WS_TABSTOP | ES_NUMBER | WS_BORDER, 74, 48, 80, 24, 202);
+    CONN_MK(L"BUTTON", L"View only (no input sent)",
+        WS_TABSTOP | BS_AUTOCHECKBOX, 74, 82, 260, 22, 203);
+    CONN_MK(L"BUTTON", L"Enable audio (QEMU)",
+        WS_TABSTOP | BS_AUTOCHECKBOX, 74, 108, 260, 22, 204);
+    CONN_MK(L"STATIC", L"TLS CA file (optional, for VeNCrypt X509):",
+        0, 14, 140, 340, 18, 0);
+    CONN_MK(L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER, 14, 160, 254, 24, 205);
+    CONN_MK(L"BUTTON", L"Browse\x2026", WS_TABSTOP, 276, 160, 72, 24, 206);
+    CONN_MK(L"BUTTON", L"Connect", WS_TABSTOP | BS_DEFPUSHBUTTON, 190, 204, 75, 28, 1);
+    CONN_MK(L"BUTTON", L"Cancel", WS_TABSTOP, 273, 204, 75, 28, 2);
+#undef CONN_MK
+
+    SetWindowTextW(GetDlgItem(dlg, 202), L"5900");
+    SetFocus(host_edit);
+
+    MSG msg;
+    BOOL got;
+    while ((got = GetMessageW(&msg, NULL, 0, 0)) != 0) {
+        if (got == -1)
+            break;
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
+            SendMessageW(dlg, WM_COMMAND, 1, 0); continue;
+        }
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+            SendMessageW(dlg, WM_COMMAND, 2, 0); continue;
+        }
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (!IsWindow(dlg))
+            break;
+    }
+    return g_conn_ok;
+}
+
 /* ---- entry point --------------------------------------------------------- */
 
 static void parse_target(const wchar_t *arg, ViewerApp *app)
@@ -202,18 +432,46 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
 {
     (void)prev; (void)cmdline; (void)show;
 
+    /* Parse the command line WITHOUT shell32 (see cmdline_to_wargv): shell32
+     * would pull in user32 and break the worker's no-win32k confinement. */
     int argc = 0;
-    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argc < 2) {
-        MessageBoxW(NULL, L"Usage: vncviewer HOST[:PORT] [--view-only]",
-                    L"VNC Lightweight", MB_OK | MB_ICONINFORMATION);
-        return 2;
+    wchar_t **argv = cmdline_to_wargv(GetCommandLineW(), &argc);
+    if (!argv)
+        return 1;
+
+    /* ---- mode dispatch: one exe, three roles -------------------------------
+     * These two modes are portable (char** argv) entry points; the GUI DLLs are
+     * delay-loaded and never touched on these paths, so a --worker process runs
+     * with user32/gdi32 unloaded and the win32k syscall filter intact. */
+    if (wargv_has(argv, argc, L"--worker")) {
+        int rc = run_utf8_mode(vnc_worker_main, argv, argc);
+        free_wargv(argv);
+        return rc;
     }
+    if (wargv_has(argv, argc, L"--headless")) {
+        /* Attach to the launching console (if any) so diagnostic output is
+         * visible; this is the only mode that writes to stdout/stderr. */
+        if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole()) {
+            FILE *f;
+            freopen_s(&f, "CONOUT$", "w", stdout);
+            freopen_s(&f, "CONOUT$", "w", stderr);
+        }
+        int rc = run_utf8_mode(vnc_headless_main, argv, argc);
+        free_wargv(argv);
+        return rc;
+    }
+
+    /* ---- default: trusted UI/broker ---------------------------------------- */
     ZeroMemory(&g_app, sizeof(g_app));
-    parse_target(argv[1], &g_app);
+    g_app.hinst = hinst; /* scale_mode defaults to 0 = fit (aspect-preserving) */
+    g_app.port = 5900;
     BOOL debug = FALSE;
-    for (int i = 2; i < argc; i++) {
-        if (!wcscmp(argv[i], L"--view-only"))
+    BOOL have_host = FALSE;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] != L'-' && !have_host) {
+            parse_target(argv[i], &g_app);
+            have_host = TRUE;
+        } else if (!wcscmp(argv[i], L"--view-only"))
             g_app.view_only = TRUE;
         else if (!wcscmp(argv[i], L"--audio"))
             g_app.want_audio = TRUE;
@@ -227,10 +485,15 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             debug = TRUE;
         else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc)
             WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
-                                sizeof(g_app.ca_file), NULL, NULL);
+                                (int)sizeof(g_app.ca_file), NULL, NULL);
     }
-    LocalFree(argv);
-    g_app.hinst = hinst; /* scale_mode defaults to 0 = fit (aspect-preserving) */
+    free_wargv(argv);
+
+    /* No target on the command line: ask for one interactively. */
+    if (!have_host) {
+        if (!prompt_connection(&g_app, hinst))
+            return 0; /* user cancelled */
+    }
 
     /* Diagnostics (opt-in). The invocation summary is redacted: the target and
      * flags only, never a password (passwords never appear on argv). */
@@ -294,7 +557,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             L"It contains no passwords, clipboard text, or screen contents.",
             wpath);
         diag_close();
-        MessageBoxW(NULL, note, L"VNC Lightweight \xE2\x80\x94 debug log",
+        MessageBoxW(NULL, note, L"VNC Lightweight \x2014 debug log",
                     MB_OK | MB_ICONINFORMATION);
     }
     return 0;

@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app/modes.h"
 #include "core/client.h"
 #include "core/qemu_audio.h"
 #include "ipc/channel.h"
@@ -416,7 +417,14 @@ static bool arg_flag(int argc, char **argv, const char *key)
     return false;
 }
 
-int main(int argc, char **argv)
+/*
+ * Worker entry point. On Windows this is invoked in-process by wWinMain when the
+ * merged vncviewer.exe is re-launched with --worker into the AppContainer (the
+ * product ships as ONE executable; see app/modes.h). On Linux it is reached
+ * through the thin main() shim below, which the ipc_test harness spawns as the
+ * standalone `vncworker` binary.
+ */
+int vnc_worker_main(int argc, char **argv)
 {
 #ifdef _WIN32
     WSADATA wsa;
@@ -479,3 +487,12 @@ int main(int argc, char **argv)
     vnc_shm_close(w.shm);
     return rc;
 }
+
+#ifdef VNC_WORKER_STANDALONE
+/* Standalone `vncworker` executable (Linux/CI: spawned by ipc_test). On Windows
+ * the worker is a mode of the single vncviewer.exe and this shim is compiled out. */
+int main(int argc, char **argv)
+{
+    return vnc_worker_main(argc, argv);
+}
+#endif

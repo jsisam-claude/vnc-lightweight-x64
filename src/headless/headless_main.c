@@ -16,6 +16,7 @@
 #  include <winsock2.h>
 #endif
 
+#include "app/modes.h"
 #include "core/client.h"
 
 struct app {
@@ -111,7 +112,13 @@ static void usage(const char *argv0)
         argv0);
 }
 
-int main(int argc, char **argv)
+/*
+ * Headless test-client entry point. On Windows this is invoked in-process by
+ * wWinMain when the merged vncviewer.exe is launched with --headless (a console
+ * diagnostic mode). On Linux it is reached through the thin main() shim below,
+ * built as the standalone `vnctest` binary used by CI.
+ */
+int vnc_headless_main(int argc, char **argv)
 {
 #ifdef _WIN32
     WSADATA wsa;
@@ -226,3 +233,12 @@ int main(int argc, char **argv)
     vnc_client_destroy(c);
     return 0;
 }
+
+#ifdef VNC_HEADLESS_STANDALONE
+/* Standalone `vnctest` executable (Linux/CI). On Windows the headless client is
+ * the --headless mode of the single vncviewer.exe and this shim is compiled out. */
+int main(int argc, char **argv)
+{
+    return vnc_headless_main(argc, argv);
+}
+#endif

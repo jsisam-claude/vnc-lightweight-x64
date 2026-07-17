@@ -132,9 +132,16 @@ The **`windows`** (Ninja) preset is toolchain-version agnostic — it uses whate
 Prompt for VS" regardless of which VS version you have. Use it if the
 version-specific presets don't match your install.
 
-`vncviewer.exe` and `vncworker.exe` land in the build's output directory (for the
-VS generators, under `<preset>/Release/`; for Ninja, directly under the build
-dir). Keep them together — the UI spawns the worker from its own folder.
+A **single** `vncviewer.exe` lands in the build's output directory (for the VS
+generators, under `<preset>/Release/`; for Ninja, directly under the build dir).
+That one executable is the whole product: launched normally it is the trusted UI;
+it re-launches *itself* with a hidden `--worker` flag to become the sandboxed
+decoder child, and `--headless` runs the console diagnostic client (the Linux
+`vnctest` equivalent). The GUI DLLs are delay-loaded so the `--worker` process
+never maps `user32`/`gdi32` and keeps its no-win32k confinement.
+
+Launched with **no arguments**, `vncviewer.exe` opens a small dialog asking for
+host/port and options (view-only, audio, TLS CA file) instead of printing usage.
 
 ## Collecting a debug log (Windows)
 
@@ -161,8 +168,9 @@ to diagnose connection issues); redact those lines before sharing if you prefer.
 The header states this in the file itself.
 
 Common first-run signals in the log:
-- `sandbox: CreateProcess ... error 1058/5` → the worker was rejected; verify
-  `vncworker.exe` is next to `vncviewer.exe` and built `/guard:cf /CETCOMPAT`.
+- `sandbox: CreateProcess ... error 1058/5` → the `--worker` re-launch was
+  rejected; verify `vncviewer.exe` was built `/guard:cf /CETCOMPAT` (the worker
+  is this same image re-launched with `--worker`).
 - `status: connect-failed` with no server lines → network/port/TLS before RFB.
 - `Server certificate not trusted` → wrong/missing `--ca` bundle.
 
@@ -173,16 +181,26 @@ Build with Visual Studio Enterprise 2022 (open the folder; pick the
 
 - **M2 shell + sandbox**: connect to a QEMU VM; verify render at 16/32bpp,
   keyboard incl. shifted symbols, mouse + wheel, clean disconnect on close.
-  In Process Explorer confirm `vncworker` runs with an AppContainer SID and the
-  ACG / CIG / no-win32k mitigation flags set, and cannot create files or windows.
+  In Process Explorer confirm the `--worker` child (a second `vncviewer.exe`
+  instance) runs with an AppContainer SID and the ACG / CIG / no-win32k mitigation
+  flags set, and cannot create files or windows.
   - The worker is spawned with **STRICT Control Flow Guard** + **CET** ALWAYS_ON,
     so it must be built `/guard:cf /CETCOMPAT` (CMake's `harden_windows_target`
     does this). If `CreateProcess` fails at spawn, check those flags first.
   - **CIG** (`BLOCK_NON_MICROSOFT_BINARIES`) means every DLL the worker loads
-    must be Microsoft-signed. This holds today (zlib/libvncclient are vendored
-    and compiled in; the only imports are `ws2_32` + the MS CRT). Adding any
-    non-MS DLL dependency to the worker — or building vendored code as a DLL —
-    will make it fail to start. Keep worker dependencies static/system-only.
+    must be Microsoft-signed. This holds today: zlib/libvncclient are vendored
+    and compiled in, and the DLLs the worker actually maps are all MS-signed
+    system libraries — `ws2_32`, `advapi32`, `secur32`, `crypt32`, plus the MS
+    CRT. (The primary EXE image itself is exempt from CIG, so the unsigned
+    `vncviewer.exe` runs fine.) The **GUI** DLLs — `user32`, `gdi32`, `shell32`,
+    `comdlg32`, `userenv`, `winmm` — are **delay-loaded**, so the worker never
+    maps them; that is also what keeps the **no-win32k** filter satisfied (loading
+    `user32` would make win32k calls in its DllMain). The mode dispatch parses the
+    command line itself (`cmdline_to_wargv`) precisely to avoid `CommandLineToArgvW`,
+    which lives in `shell32` and would drag in `user32`. Adding any non-MS DLL
+    dependency to the worker path — or making the worker call a delay-loaded GUI
+    function — will make it fail to start. Keep worker-reachable dependencies
+    static/system-only.
 - **M3 encodings + clipboard + cursor**: default encodings negotiate; text
   copy/paste both directions (RFB Extended Clipboard vs QEMU `qemu-vdagent`);
   remote cursor shape tracks the guest.

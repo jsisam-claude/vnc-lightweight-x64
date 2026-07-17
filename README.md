@@ -78,10 +78,17 @@ The VNC server is treated as fully untrusted input. Defense is layered —
 prevention (latest-release pinning, minimized attack surface, trust-boundary
 validation), discovery (permanent ASan/UBSan gate + fuzzing of every parser),
 and **containment**: in the Windows product all protocol parsing runs in a
-separate `vncworker` process inside an AppContainer with ACG/CIG, the win32k
-syscall surface removed, and no filesystem/registry/UI/network reach, brokered
-to a thin trusted UI process. A compromised decoder gets a sandbox with nothing
-in it. Details live in the project plan and in code comments.
+separate worker process inside an AppContainer with ACG/CIG, the win32k syscall
+surface removed, and no filesystem/registry/UI/network reach, brokered to a thin
+trusted UI process. A compromised decoder gets a sandbox with nothing in it.
+
+The product ships as a **single `vncviewer.exe`** (Chromium-style): launched
+normally it is the trusted UI; it re-launches *itself* with a hidden `--worker`
+flag to become the sandboxed decoder child. The GUI DLLs are delay-loaded, so the
+worker never maps `user32`/`gdi32` and the no-win32k confinement holds even though
+one binary contains both roles. Run `vncviewer.exe` with no arguments to get a
+connection dialog; `--headless` runs the console diagnostic client. Details live
+in the project plan and in code comments.
 
 ### Transport posture
 

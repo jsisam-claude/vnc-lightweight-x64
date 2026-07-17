@@ -216,13 +216,16 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
             inherit, sizeof(inherit), NULL, NULL))
         goto cleanup;
 
-    /* Build the command line. Handle values are process-local numbers valid in
-     * the child because they are inherited. */
-    wchar_t exe_dir[MAX_PATH], exe_path[MAX_PATH];
-    GetModuleFileNameW(NULL, exe_dir, MAX_PATH);
+    /* Single-executable model: re-launch OURSELVES with a hidden --worker flag to
+     * become the sandboxed decoder child (Chromium-style). exe_path is this exact
+     * image; exe_dir is its folder (used as the child's working directory). The
+     * GUI DLLs (user32/gdi32/...) are delay-loaded, so the worker never loads them
+     * and the no-win32k mitigation holds. */
+    wchar_t exe_path[MAX_PATH], exe_dir[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    wcsncpy_s(exe_dir, MAX_PATH, exe_path, _TRUNCATE);
     wchar_t *slash = wcsrchr(exe_dir, L'\\');
     if (slash) *slash = 0;
-    _snwprintf_s(exe_path, MAX_PATH, _TRUNCATE, L"%s\\vncworker.exe", exe_dir);
 
     wchar_t whost[256], wenc[512] = L"", ca_arg[1060] = L"";
     utf8_to_wide(p->host, whost, 256);
@@ -237,7 +240,7 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
      * are inherited (pipes + framebuffer mapping). */
     wchar_t cmdline[2600];
     _snwprintf_s(cmdline, 2600, _TRUNCATE,
-        L"\"%s\" --shm-handle %llu --shm-bytes %zu --host %s --port %d "
+        L"\"%s\" --worker --shm-handle %llu --shm-bytes %zu --host %s --port %d "
         L"--rd %llu --wr %llu%s%s%s%s%s",
         exe_path,
         (unsigned long long)(uintptr_t)fbmap_inh,
@@ -262,8 +265,9 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         DWORD e = GetLastError();
         diag_win32("sandbox: CreateProcess (worker)", e);
         diag_logf(DIAG_ERROR, "sandbox: worker spawn failed \xE2\x80\x94 if this is "
-                  "ERROR_ACCESS_DENIED/1058, check vncworker.exe built /guard:cf "
-                  "/CETCOMPAT and sits next to vncviewer.exe");
+                  "ERROR_ACCESS_DENIED/1058, check vncviewer.exe was built "
+                  "/guard:cf /CETCOMPAT (the worker is this same image re-launched "
+                  "with --worker)");
         fprintf(stderr, "sandbox: CreateProcess failed (err %lu)\n", e);
         goto cleanup;
     }
