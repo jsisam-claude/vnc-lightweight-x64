@@ -34,10 +34,26 @@
     },
     {
       "name": "vs2022-x64",
-      "displayName": "Visual Studio 2022, x64 (Windows product)",
+      "displayName": "Visual Studio 2022, x64 (v143 toolset)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/vs2022-x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "vs2026-x64",
+      "displayName": "Visual Studio 2026, x64 (v145 toolset)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2026-x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows Ninja + cl (Debug) — toolchain-version agnostic",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
@@ -63,6 +79,8 @@
     { "name": "linux-asan",  "configurePreset": "linux-asan" },
     { "name": "linux-tls",   "configurePreset": "linux-tls" },
     { "name": "vs2022-x64",  "configurePreset": "vs2022-x64" },
+    { "name": "vs2026-x64",  "configurePreset": "vs2026-x64" },
+    { "name": "windows",     "configurePreset": "windows" },
     { "name": "win-asan",    "configurePreset": "win-asan" },
     { "name": "win-ninja-release", "configurePreset": "win-ninja-release" }
   ]

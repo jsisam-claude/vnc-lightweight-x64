@@ -116,6 +116,26 @@ memory-safety findings (only GnuTLS exit leaks, which the SChannel build does no
 have). On Windows, repeat against QEMU using `--ca` with a PEM bundle and confirm
 the SChannel path rejects a wrong/expired/hostname-mismatched cert.
 
+## Building on Windows
+
+Pick the preset that matches your toolchain (the generator pins a toolset, so a
+mismatch gives MSB8020 "build tools ... cannot be found"):
+
+| Visual Studio | Preset | Command |
+|---|---|---|
+| 2022 (v143) | `vs2022-x64` | `cmake --preset vs2022-x64 && cmake --build build/vs2022-x64 --config Release` |
+| 2026 (v145) | `vs2026-x64` | `cmake --preset vs2026-x64 && cmake --build build/vs2026-x64 --config Release` |
+| any version | `windows` (Ninja) | from an **x64 Native Tools Command Prompt**: `cmake --preset windows && cmake --build build/windows` |
+
+The **`windows`** (Ninja) preset is toolchain-version agnostic — it uses whatever
+`cl.exe` is on the path — so it always works from the "x64 Native Tools Command
+Prompt for VS" regardless of which VS version you have. Use it if the
+version-specific presets don't match your install.
+
+`vncviewer.exe` and `vncworker.exe` land in the build's output directory (for the
+VS generators, under `<preset>/Release/`; for Ninja, directly under the build
+dir). Keep them together — the UI spawns the worker from its own folder.
+
 ## Collecting a debug log (Windows)
 
 If something doesn't work, run with diagnostics on and share the log:
