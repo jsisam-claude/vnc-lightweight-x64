@@ -227,9 +227,18 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     wchar_t *slash = wcsrchr(exe_dir, L'\\');
     if (slash) *slash = 0;
 
-    wchar_t whost[256], wenc[512] = L"", ca_arg[1060] = L"";
+    /* All string values are DOUBLE-QUOTED on the command line: the worker's arg
+     * parser takes the single next token as the value, so an unquoted multi-word
+     * value (the default --encodings list is multi-word, and a host could contain
+     * a space) would be split and mis-parsed. Quote host and encodings as --ca
+     * already is. (Values here originate from our own UI/config, not the server.) */
+    wchar_t whost[256], enc_arg[540] = L"", ca_arg[1060] = L"";
     utf8_to_wide(p->host, whost, 256);
-    if (p->encodings) utf8_to_wide(p->encodings, wenc, 512);
+    if (p->encodings) {
+        wchar_t wenc[512];
+        utf8_to_wide(p->encodings, wenc, 512);
+        _snwprintf_s(enc_arg, 540, _TRUNCATE, L" --encodings \"%s\"", wenc);
+    }
     if (p->ca_file) {
         wchar_t wca[1024];
         utf8_to_wide(p->ca_file, wca, 1024);
@@ -240,15 +249,14 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
      * are inherited (pipes + framebuffer mapping). */
     wchar_t cmdline[2600];
     _snwprintf_s(cmdline, 2600, _TRUNCATE,
-        L"\"%s\" --worker --shm-handle %llu --shm-bytes %zu --host %s --port %d "
-        L"--rd %llu --wr %llu%s%s%s%s%s",
+        L"\"%s\" --worker --shm-handle %llu --shm-bytes %zu --host \"%s\" --port %d "
+        L"--rd %llu --wr %llu%s%s%s%s",
         exe_path,
         (unsigned long long)(uintptr_t)fbmap_inh,
         p->shm_bytes, whost, p->port,
         (unsigned long long)(uintptr_t)cmd_rd,
         (unsigned long long)(uintptr_t)evt_wr,
-        p->encodings ? L" --encodings " : L"",
-        p->encodings ? wenc : L"",
+        enc_arg,
         p->view_only ? L" --view-only" : L"",
         p->audio ? L" --audio" : L"",
         ca_arg);

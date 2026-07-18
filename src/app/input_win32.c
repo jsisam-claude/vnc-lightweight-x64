@@ -106,8 +106,10 @@ void input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam)
         return;
 
     /* Track button state across events into the RFB button mask (bit0=left,
-     * bit1=middle, bit2=right, bit3=wheel-up, bit4=wheel-down). */
-    static int mask = 0;
+     * bit1=middle, bit2=right, bit3=wheel-up, bit4=wheel-down). Held in the app
+     * (not a function static) so it resets on reconnect — otherwise a button held
+     * at disconnect would stay logically pressed in the next session. */
+    int mask = app->button_mask;
     switch (msg) {
     case WM_LBUTTONDOWN: mask |= 1; break;
     case WM_LBUTTONUP:   mask &= ~1; break;
@@ -117,6 +119,7 @@ void input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam)
     case WM_RBUTTONUP:   mask &= ~4; break;
     default: break;
     }
+    app->button_mask = mask;
 
     if (x < 0) x = 0;
     if (y < 0) y = 0;

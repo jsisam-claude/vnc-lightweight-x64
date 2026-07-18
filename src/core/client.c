@@ -9,6 +9,12 @@
 
 #include "core/qemu_audio.h"
 
+#ifdef _WIN32
+/* SChannel backend (tls_schannel.c): bytes of already-decrypted plaintext held
+ * in the TLS layer that select() on the socket cannot see. 0 for no session. */
+unsigned vnc_schannel_pending(rfbClient *client);
+#endif
+
 /* Clipboard text from an untrusted server is capped before it reaches the UI. */
 #define VNC_MAX_CUT_TEXT (1u << 20) /* 1 MiB */
 
@@ -353,15 +359,36 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
     return true;
 }
 
+/* True if a whole message is already sitting in a buffer that select() cannot
+ * see, so the caller must NOT block on the socket. libvncclient reads a chunk
+ * (up to RFB_BUFFER_SIZE) at a time, so several coalesced RFB messages routinely
+ * land in client->buffered after the first is processed; over TLS the SChannel
+ * backend can additionally hold decrypted plaintext from an oversized record.
+ * Without this check a trailing server-pushed message (ServerCutText, Bell,
+ * audio DATA) with no follow-on socket traffic would sit unprocessed until the
+ * next unrelated read. */
+static bool has_buffered_input(vnc_client *c)
+{
+    if (c->rfb->buffered > 0)
+        return true;
+#ifdef _WIN32
+    if (vnc_schannel_pending(c->rfb) > 0) /* decrypted-but-unconsumed plaintext */
+        return true;
+#endif
+    return false;
+}
+
 int vnc_client_pump(vnc_client *c, unsigned timeout_us)
 {
     if (!c->rfb)
         return -1;
-    int n = WaitForMessage(c->rfb, timeout_us);
-    if (n < 0)
-        return -1;
-    if (n == 0)
-        return 0;
+    if (!has_buffered_input(c)) {
+        int n = WaitForMessage(c->rfb, timeout_us);
+        if (n < 0)
+            return -1;
+        if (n == 0)
+            return 0;
+    }
     if (!HandleRFBServerMessage(c->rfb))
         return -1;
     return 1;
@@ -371,6 +398,8 @@ int vnc_client_wait(vnc_client *c, unsigned timeout_us)
 {
     if (!c->rfb)
         return -1;
+    if (has_buffered_input(c))
+        return 1;
     return WaitForMessage(c->rfb, timeout_us);
 }
 
@@ -442,6 +471,15 @@ bool vnc_client_audio_enable(vnc_client *c, uint8_t format, uint8_t channels,
 {
     if (!c->rfb)
         return false;
+    /* Enforce the documented format bounds at the point we build SET_FORMAT, so
+     * the API is self-protecting regardless of caller (the worker also validates
+     * the untrusted VNC_CMD_AUDIO_ENABLE before reaching here — defense in depth). */
+    if (channels < 1 || channels > QA_MAX_CHANNELS ||
+        frequency < QA_MIN_FREQ || frequency > QA_MAX_FREQ) {
+        emit_log(c, VNC_LOG_WARN, "audio enable rejected: %u ch, %u Hz out of range",
+                 channels, frequency);
+        return false;
+    }
     uint8_t msg[10];
     size_t len = 0;
     qemu_audio_build_set_format(msg, &len, format, channels, frequency);

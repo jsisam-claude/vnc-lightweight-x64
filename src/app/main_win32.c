@@ -127,7 +127,10 @@ static BOOL prompt_password(HWND parent, HINSTANCE hinst)
 void app_request_password(ViewerApp *app)
 {
     HINSTANCE hinst = (HINSTANCE)GetModuleHandleW(NULL);
-    char utf8[512];
+    /* g_pw_buf holds up to 511 wchars; UTF-8 needs up to 3 bytes/char (+NUL).
+     * A 512-byte buffer silently failed (WideCharToMultiByte -> 0) for long or
+     * non-ASCII passwords, sending an empty password. Size for the worst case. */
+    char utf8[512 * 3 + 1];
     if (prompt_password(app->hwnd, hinst)) {
         int n = WideCharToMultiByte(CP_UTF8, 0, g_pw_buf, -1, utf8, sizeof(utf8),
                                     NULL, NULL);
@@ -146,6 +149,7 @@ void app_request_password(ViewerApp *app)
 
 BOOL app_start_session(ViewerApp *app)
 {
+    app->button_mask = 0; /* no buttons held at the start of a (re)connection */
     char host_utf8[256];
     WideCharToMultiByte(CP_UTF8, 0, app->host, -1, host_utf8, sizeof(host_utf8),
                         NULL, NULL);
@@ -539,7 +543,10 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
     }
 
     MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0)) {
+    BOOL got;
+    while ((got = GetMessageW(&msg, NULL, 0, 0)) != 0) {
+        if (got == -1)
+            break; /* error: don't dispatch a garbage MSG */
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

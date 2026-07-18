@@ -447,6 +447,19 @@ rfbBool HandleVeNCryptAuth(rfbClient *client)
     return TRUE;
 }
 
+/* Bytes of decrypted plaintext buffered in the TLS layer but not yet consumed by
+ * ReadFromTLS. The message pump uses this to avoid blocking on select() when a
+ * whole RFB message is already available from an oversized/coalesced TLS record
+ * (see has_buffered_input in client.c). Encrypted-but-undecrypted residue is
+ * deliberately NOT counted: decrypting it might require a blocking socket read. */
+unsigned vnc_schannel_pending(rfbClient *client)
+{
+    sc_tls *tls = client->tlsSession;
+    if (!tls || !tls->plain || tls->plain_off >= tls->plain_len)
+        return 0;
+    return (unsigned)(tls->plain_len - tls->plain_off);
+}
+
 int ReadFromTLS(rfbClient *client, char *out, unsigned int n)
 {
     sc_tls *tls = client->tlsSession;
@@ -498,6 +511,11 @@ int ReadFromTLS(rfbClient *client, char *out, unsigned int n)
                 if (extra_len)
                     memmove(tls->enc, extra->pvBuffer, extra_len);
                 tls->enc_len = extra_len;
+                /* An empty application record (dlen==0) decrypts fine but yields
+                 * no bytes. Returning 0 here would look like EOF to libvncclient
+                 * and drop the session; loop to process the extra / read more. */
+                if (dlen == 0)
+                    continue;
                 return (int)take;
             }
             if (ss == SEC_I_CONTEXT_EXPIRED)

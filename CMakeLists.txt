@@ -275,15 +275,18 @@ if(WIN32)
   target_include_directories(vncviewer PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
   target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})
   target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-  # Always-loaded imports (safe in the no-win32k worker): winsock, security,
-  # crypto (SChannel TLS), advapi32 (SIDs/ACLs are UI-only but the DLL is
-  # win32k-free). GUI DLLs are delay-loaded so the worker never maps them.
+  # Always-loaded imports, all win32k-free and Microsoft-signed (CIG-safe) so the
+  # sandboxed worker can map them: winsock + the SChannel TLS DLLs. Everything the
+  # worker never calls — the GUI DLLs AND advapi32 (SIDs/ACLs are UI-only) — is
+  # delay-loaded, so the worker's mapped-DLL set stays minimal and no user32 can
+  # be pulled in to violate the no-win32k mitigation.
   target_link_libraries(vncviewer PRIVATE
-    ws2_32 advapi32 secur32 crypt32 Threads::Threads
-    user32 gdi32 shell32 comdlg32 userenv winmm delayimp)
+    ws2_32 secur32 crypt32 Threads::Threads
+    user32 gdi32 shell32 comdlg32 userenv winmm advapi32 delayimp)
   target_link_options(vncviewer PRIVATE
     /DELAYLOAD:user32.dll /DELAYLOAD:gdi32.dll /DELAYLOAD:shell32.dll
-    /DELAYLOAD:comdlg32.dll /DELAYLOAD:userenv.dll /DELAYLOAD:winmm.dll)
+    /DELAYLOAD:comdlg32.dll /DELAYLOAD:userenv.dll /DELAYLOAD:winmm.dll
+    /DELAYLOAD:advapi32.dll)
   attach_tls(vncviewer)               # SChannel VeNCrypt/X509 backend + defs
   harden_windows_target(vncviewer)    # /guard:cf /CETCOMPAT so the CFG/CET spawn works
 endif()

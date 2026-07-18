@@ -61,6 +61,7 @@ typedef struct {
     int         port;
     BOOL        view_only;
     BOOL        connected;
+    int         button_mask;   /* live pointer-button state, reset per session */
     char        ca_file[1024]; /* UTF-8 PEM CA path, empty if none */
 } ViewerApp;
 

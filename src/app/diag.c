@@ -40,8 +40,6 @@ int diag_init(int force, const char *invocation)
             return 0; /* not requested */
     }
 
-    InitializeCriticalSection(&g_lock);
-
     wchar_t tmp[MAX_PATH];
     DWORD tn = GetTempPathW(MAX_PATH, tmp);
     if (tn == 0 || tn > MAX_PATH)
@@ -58,6 +56,9 @@ int diag_init(int force, const char *invocation)
                          CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (g_file == INVALID_HANDLE_VALUE)
         return 0;
+    /* Initialize the lock only once we're committed to enabling (past every early
+     * return), so a failed init doesn't leak an uninitialized-then-abandoned CS. */
+    InitializeCriticalSection(&g_lock);
     WideCharToMultiByte(CP_UTF8, 0, wpath, -1, g_path, sizeof(g_path), NULL, NULL);
     g_enabled = 1;
 

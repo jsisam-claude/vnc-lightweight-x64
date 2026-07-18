@@ -10,6 +10,7 @@
  * This is the faithful in-container test for code whose Windows GUI/sandbox
  * cannot run here; only the AppContainer wrapping differs on Windows.
  */
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,9 @@ static uint64_t fnv1a_rgb(const uint8_t *fb, uint32_t w, uint32_t h)
 
 int main(int argc, char **argv)
 {
+    /* A crashed/exited worker must make our channel writes fail, not raise
+     * SIGPIPE and kill this process mid-teardown. */
+    signal(SIGPIPE, SIG_IGN);
     if (argc < 2) {
         fprintf(stderr, "usage: %s HOST:PORT [--encodings E] [--worker PATH]\n"
                         "  password from $VNC_PASSWORD; needs vncworker on PATH\n",
@@ -153,6 +157,17 @@ int main(int argc, char **argv)
         case VNC_EVT_RESIZE:
             if (len == sizeof(vnc_ipc_resize)) {
                 vnc_ipc_resize *rz = (void *)buf;
+                /* The worker is untrusted; validate its dims against the mapping
+                 * capacity before we ever read width*height*4 from it (the real
+                 * UI does the same in viewer_window.c). A hostile worker sending
+                 * 0xFFFF x 0xFFFF must not drive an out-of-bounds checksum read. */
+                if (rz->width == 0 || rz->height == 0 ||
+                    rz->width > 16384 || rz->height > 16384 ||
+                    (size_t)rz->width * rz->height * 4u > vnc_shm_capacity(shm)) {
+                    fprintf(stderr, "[ipc_test] rejecting resize %ux%u\n",
+                            rz->width, rz->height);
+                    goto done;
+                }
                 width = rz->width; height = rz->height;
             }
             break;

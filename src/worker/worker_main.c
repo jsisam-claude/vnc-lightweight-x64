@@ -49,6 +49,7 @@ static void mtx_lock(worker_mutex *m)   { EnterCriticalSection(m); }
 static void mtx_unlock(worker_mutex *m) { LeaveCriticalSection(m); }
 #else
 #  include <pthread.h>
+#  include <signal.h>
 #  include <sys/select.h>
 typedef pthread_mutex_t worker_mutex;
 typedef pthread_t       worker_thread;
@@ -388,8 +389,17 @@ static int worker_run(worker *w, const char *host, int port,
     }
     w->running = 0;
 
+    /* The reader thread is still running here (it exits only once the UI closes
+     * the command channel, which the UI does in response to this very status).
+     * Every other post-startup channel write happens under api_lock; take it for
+     * this one too so it cannot interleave with a log the reader emits from
+     * inside a libvncclient call, which would corrupt the framed byte stream.
+     * (Sending it after the join would deadlock: the UI won't close the channel
+     * until it sees this status.) */
+    mtx_lock(&w->api_lock);
     vnc_ipc_status down = { VNC_STATUS_DISCONNECTED };
     vnc_channel_send(&w->ch, VNC_EVT_STATUS, &down, sizeof(down));
+    mtx_unlock(&w->api_lock);
 
 #ifdef _WIN32
     WaitForSingleObject(rt, 1000);
@@ -429,6 +439,11 @@ int vnc_worker_main(int argc, char **argv)
 #ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+#else
+    /* A dead UI peer must make our next channel write FAIL (so we tear down
+     * cleanly), not kill us by signal. Windows WriteFile already returns an
+     * error for a broken pipe; POSIX needs SIGPIPE ignored. */
+    signal(SIGPIPE, SIG_IGN);
 #endif
     const char *shm_name = arg_val(argc, argv, "--shm");         /* POSIX test */
     const char *shm_handle_s = arg_val(argc, argv, "--shm-handle"); /* Windows */

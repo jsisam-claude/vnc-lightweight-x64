@@ -29,6 +29,21 @@ static bool is_reserved_device(const char *name)
              (A == 'L' && B == 'P' && C == 'T')) && d >= '1' && d <= '9')
             return true;
     }
+    /* Console pseudo-devices CONIN$ / CONOUT$ ('$' is otherwise an allowed char). */
+    static const char *devx[] = { "CONIN$", "CONOUT$" };
+    for (size_t i = 0; i < 2; i++) {
+        size_t L = strlen(devx[i]);
+        if (base != L)
+            continue;
+        bool match = true;
+        for (size_t j = 0; j < L; j++) {
+            char c = name[j];
+            char u = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+            if (u != devx[i][j]) { match = false; break; }
+        }
+        if (match)
+            return true;
+    }
     return false;
 }
 

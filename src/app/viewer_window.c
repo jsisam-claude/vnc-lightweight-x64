@@ -126,7 +126,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             L"File transfer requires a TightVNC/UltraVNC server in the guest; "
             L"QEMU's built-in VNC has no file channel. The transport is not yet "
             L"implemented in this build.", valid);
-        MessageBoxW(hwnd, note, L"VNC Lightweight — File transfer",
+        MessageBoxW(hwnd, note, L"VNC Lightweight \x2014 File transfer",
                     MB_OK | MB_ICONINFORMATION);
         return 0;
     }
@@ -294,6 +294,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_MOUSEWHEEL: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        /* WM_MOUSEWHEEL reports SCREEN coordinates (unlike move/button messages,
+         * which are client-relative); convert before mapping. */
+        if (msg == WM_MOUSEWHEEL) {
+            POINT pt = { x, y };
+            ScreenToClient(hwnd, &pt);
+            x = pt.x; y = pt.y;
+        }
         /* Map window coords to framebuffer coords through the same dest rect the
          * paint uses, so letterbox/1:1 modes map correctly. */
         RECT rc; GetClientRect(hwnd, &rc);
