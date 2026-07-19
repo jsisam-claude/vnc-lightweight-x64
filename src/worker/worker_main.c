@@ -64,6 +64,7 @@ typedef struct {
     size_t        shm_capacity;
     vnc_client   *client;
     worker_mutex  api_lock;   /* serialises libvncclient calls */
+    worker_mutex  log_lock;   /* serialises channel writes from the log sink */
     volatile int  running;
     bool          want_audio;
 } worker;
@@ -149,6 +150,10 @@ static void w_on_led(void *user, uint8_t state)
     vnc_channel_send(&w->ch, VNC_EVT_LED, &led, sizeof(led));
 }
 
+/* Audio opt-in is enforced here too: the QEMU-audio extension is registered
+ * process-wide, so a hostile server can send BEGIN/DATA even though we never sent
+ * ENABLE. Drop it unless the user asked for audio, so unsolicited audio never
+ * reaches the UI at all (the UI also gates playback on its own opt-in). */
 static void w_on_audio_begin(void *user)
 {
     (void)user; /* format was already announced at enable; begin needs no action */
@@ -156,11 +161,15 @@ static void w_on_audio_begin(void *user)
 static void w_on_audio_data(void *user, const uint8_t *pcm, size_t len)
 {
     worker *w = user;
+    if (!w->want_audio)
+        return;
     vnc_channel_send(&w->ch, VNC_EVT_AUDIO_DATA, pcm, (uint32_t)len);
 }
 static void w_on_audio_end(void *user)
 {
     worker *w = user;
+    if (!w->want_audio)
+        return;
     vnc_channel_send(&w->ch, VNC_EVT_AUDIO_END, NULL, 0);
 }
 
@@ -168,8 +177,17 @@ static void w_on_log(void *user, vnc_log_level level, const char *msg)
 {
     worker *w = user;
     uint8_t lvl = (uint8_t)level;
+    /* libvncclient's log is process-global and can fire from the main thread
+     * OUTSIDE api_lock (e.g. WaitForMessage's select() failing) at the same time
+     * the reader thread logs from a failing input send UNDER api_lock. Those two
+     * channel writes are not otherwise serialised, and vnc_channel_send2 emits
+     * header+payload as separate writes, so without this lock their bytes could
+     * interleave and corrupt the framed stream. Every other channel write is
+     * already serialised by api_lock; log writes are the one exception. */
+    mtx_lock(&w->log_lock);
     vnc_channel_send2(&w->ch, VNC_EVT_LOG, &lvl, 1,
                       msg, (uint32_t)strlen(msg));
+    mtx_unlock(&w->log_lock);
 }
 
 /* Emit a worker milestone over the same log channel (for the diagnostic log). */
@@ -481,6 +499,7 @@ int vnc_worker_main(int argc, char **argv)
     worker w;
     memset(&w, 0, sizeof(w));
     mtx_init(&w.api_lock);
+    mtx_init(&w.log_lock);
     w.want_audio = want_audio;
 
     size_t shm_bytes = (size_t)strtoull(shm_bytes_s, NULL, 10);
@@ -512,6 +531,10 @@ int vnc_worker_main(int argc, char **argv)
     int rc = worker_run(&w, host, (int)strtol(port_s, NULL, 10),
                         encodings, view_only, ca_file);
 
+    /* Detach the process-global libvncclient log from &w before we tear it down:
+     * rfbClientCleanup() (inside destroy) can log, and must not fire w_on_log with
+     * a worker whose channel/locks are going away. */
+    vnc_client_set_global_log(NULL, NULL);
     if (w.client)
         vnc_client_destroy(w.client);
     vnc_shm_close(w.shm);
