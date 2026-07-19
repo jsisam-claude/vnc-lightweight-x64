@@ -323,9 +323,11 @@ static LRESULT CALLBACK conn_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             wchar_t hostbuf[256], portbuf[16];
             GetWindowTextW(GetDlgItem(hwnd, 201), hostbuf, 256);
             GetWindowTextW(GetDlgItem(hwnd, 202), portbuf, 16);
-            /* trim leading/trailing spaces on host; reject empty */
+            /* trim leading AND trailing spaces on host; reject empty */
             wchar_t *hs = hostbuf;
             while (*hs == L' ') hs++;
+            size_t hl = wcslen(hs);
+            while (hl > 0 && hs[hl - 1] == L' ') hs[--hl] = 0;
             if (!*hs) { MessageBoxW(hwnd, L"Please enter a host.",
                                     L"VNC Lightweight", MB_OK | MB_ICONWARNING); return 0; }
             wcsncpy_s(a->host, 256, hs, _TRUNCATE);
@@ -337,9 +339,12 @@ static LRESULT CALLBACK conn_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             a->want_audio = (IsDlgButtonChecked(hwnd, 204) == BST_CHECKED);
             wchar_t caw[1024] = L"";
             GetWindowTextW(GetDlgItem(hwnd, 205), caw, 1024);
-            if (caw[0])
-                WideCharToMultiByte(CP_UTF8, 0, caw, -1, a->ca_file,
-                                    (int)sizeof(a->ca_file), NULL, NULL);
+            /* On overflow WideCharToMultiByte returns 0 and may leave the buffer
+             * unterminated; treat a too-long path as "no CA" (which then fails the
+             * TLS handshake closed) rather than passing an unterminated string. */
+            if (!caw[0] || WideCharToMultiByte(CP_UTF8, 0, caw, -1, a->ca_file,
+                                               (int)sizeof(a->ca_file), NULL, NULL) <= 0)
+                a->ca_file[0] = 0;
             g_conn_ok = TRUE;
             DestroyWindow(hwnd);
             return 0;
@@ -502,9 +507,11 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             g_app.scale_mode = 2;
         else if (!wcscmp(argv[i], L"--debug"))
             debug = TRUE;
-        else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc)
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
-                                (int)sizeof(g_app.ca_file), NULL, NULL);
+        else if (!wcscmp(argv[i], L"--ca") && i + 1 < argc) {
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, g_app.ca_file,
+                                    (int)sizeof(g_app.ca_file), NULL, NULL) <= 0)
+                g_app.ca_file[0] = 0; /* too long: don't pass an unterminated path */
+        }
     }
     free_wargv(argv);
 

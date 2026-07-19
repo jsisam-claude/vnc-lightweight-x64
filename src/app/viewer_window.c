@@ -166,17 +166,22 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_UPDATE: {
         vnc_ipc_rect *r = (vnc_ipc_rect *)lp;
         if (r) {
-            /* The rect is in framebuffer coordinates but the image is stretched
-             * to the client area, so scale it (with a 1px margin) before
-             * invalidating, or the wrong region repaints when sizes differ. */
+            /* The rect is in framebuffer coordinates. Map it through the SAME
+             * dest rect WM_PAINT blits into (compute_dest_rect) — NOT a plain
+             * full-stretch — or in fit/1:1 mode (the default) the invalidated
+             * region misses where the pixels actually land (offset by the
+             * letterbox bars and scaled by the fit factor), and the change never
+             * repaints until an unrelated full invalidate. 1px margin for rounding. */
             RECT cr; GetClientRect(hwnd, &cr);
             int cw = cr.right - cr.left, ch = cr.bottom - cr.top;
-            if (app->fb_width > 0 && app->fb_height > 0 && cw > 0 && ch > 0) {
+            RECT d = compute_dest_rect(app, cw, ch);
+            int dw = d.right - d.left, dh = d.bottom - d.top;
+            if (app->fb_width > 0 && app->fb_height > 0 && dw > 0 && dh > 0) {
                 RECT rc;
-                rc.left   = (LONG)((int64_t)r->x * cw / app->fb_width) - 1;
-                rc.top    = (LONG)((int64_t)r->y * ch / app->fb_height) - 1;
-                rc.right  = (LONG)((int64_t)(r->x + r->w) * cw / app->fb_width) + 2;
-                rc.bottom = (LONG)((int64_t)(r->y + r->h) * ch / app->fb_height) + 2;
+                rc.left   = d.left + (LONG)((int64_t)r->x * dw / app->fb_width) - 1;
+                rc.top    = d.top  + (LONG)((int64_t)r->y * dh / app->fb_height) - 1;
+                rc.right  = d.left + (LONG)((int64_t)(r->x + r->w) * dw / app->fb_width) + 2;
+                rc.bottom = d.top  + (LONG)((int64_t)(r->y + r->h) * dh / app->fb_height) + 2;
                 InvalidateRect(hwnd, &rc, FALSE);
             } else {
                 InvalidateRect(hwnd, NULL, FALSE);
@@ -394,6 +399,11 @@ ATOM viewer_register_class(HINSTANCE hinst)
 {
     WNDCLASSEXW wc = {0};
     wc.cbSize = sizeof(wc);
+    /* Repaint the whole client area on any resize: the framebuffer image is
+     * scaled to fit, so on resize the previously-visible region must be
+     * re-stretched, not just the newly-exposed strip (which would leave the old
+     * scaling in place until an unrelated full repaint). */
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = wndproc;
     wc.hInstance = hinst;
     wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
