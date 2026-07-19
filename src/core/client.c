@@ -491,10 +491,12 @@ bool vnc_client_audio_enable(vnc_client *c, uint8_t format, uint8_t channels,
     /* Enforce the documented format bounds at the point we build SET_FORMAT, so
      * the API is self-protecting regardless of caller (the worker also validates
      * the untrusted VNC_CMD_AUDIO_ENABLE before reaching here — defense in depth). */
-    if (channels < 1 || channels > QA_MAX_CHANNELS ||
+    if (format > QA_FORMAT_S32 ||
+        channels < 1 || channels > QA_MAX_CHANNELS ||
         frequency < QA_MIN_FREQ || frequency > QA_MAX_FREQ) {
-        emit_log(c, VNC_LOG_WARN, "audio enable rejected: %u ch, %u Hz out of range",
-                 channels, frequency);
+        emit_log(c, VNC_LOG_WARN,
+                 "audio enable rejected: fmt %u, %u ch, %u Hz out of range",
+                 format, channels, frequency);
         return false;
     }
     uint8_t msg[10];
