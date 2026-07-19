@@ -98,11 +98,26 @@ accepts **X509 VeNCrypt subtypes only** — anonymous TLS (VeNCrypt `TLS*`
 subtypes and RFB security type 18) is refused, since it provides no
 man-in-the-middle protection — and fails closed if the certificate does not
 verify (no trust-on-first-use). Without `--ca`, or against a server offering no
-X509 subtype, the TLS handshake is rejected.
+X509 subtype, the TLS handshake is rejected. Setting `--ca` additionally pins the
+security type to VeNCrypt **and** refuses to proceed (including sending any VNC
+password) if the negotiated transport turns out not to be TLS — so a server or
+MITM that tries an RFB-version/security downgrade to cleartext is rejected rather
+than silently accepted.
 
 Plain RFB (no `--ca`, non-TLS server) uses VNC Authentication — a weak DES
 challenge over plaintext. Use it only over localhost, an SSH tunnel, or a
 trusted network.
+
+### Residual risk
+
+The sandbox contains a compromised decoder so it cannot reach the filesystem, UI,
+or network — but within the RFB protocol it can still *lie*: the framebuffer,
+cursor, audio, and **clipboard** it reports are attacker-controlled. The UI caps
+and bounds-checks all of these, but clipboard text set by the server is applied
+to the local clipboard (this is the standard VNC clipboard-sync feature); treat a
+connection to an untrusted server as able to change what you later paste. Audio
+and the password prompt are gated on explicit opt-in / handshake state so a
+compromised worker cannot force playback or phish a mid-session password.
 
 ## Licensing
 

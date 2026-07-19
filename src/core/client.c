@@ -165,6 +165,18 @@ static char *cb_get_password(rfbClient *rfb)
     vnc_client *c = self_of(rfb);
     if (!c->delegate.get_password)
         return NULL;
+    /* A configured CA means the user REQUIRES authenticated TLS. If we are asked
+     * for a VNC-auth password while no TLS session is active, the server has
+     * downgraded the transport (e.g. by announcing RFB 3.3, whose legacy security
+     * path bypasses the VeNCrypt pin in SetClientAuthSchemes) and the DES response
+     * would travel in CLEARTEXT — offline-crackable. Refuse: returning NULL aborts
+     * the authentication and the connection, before the password leaves the host. */
+    if (c->ca_file && !rfb->tlsSession) {
+        emit_log(c, VNC_LOG_ERROR,
+                 "refusing to send a password over a non-TLS transport "
+                 "(a CA is set; the server may be attempting a downgrade)");
+        return NULL;
+    }
     return c->delegate.get_password(c->delegate.user);
 }
 
@@ -386,6 +398,19 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
     int argc = 0;
     if (!rfbInitClient(c->rfb, &argc, NULL)) {
         /* rfbInitClient frees the client on failure; drop our dangling pointer. */
+        c->rfb = NULL;
+        return false;
+    }
+    /* Final downgrade guard: if the user required TLS (CA set) but no TLS session
+     * is active, the whole handshake ran in cleartext — e.g. an RFB 3.3 downgrade
+     * that offered "None" (no password callback fires, so cb_get_password's guard
+     * never runs). Tear the session down NOW, before we request any framebuffer,
+     * so no pixels or keystrokes ever traverse the cleartext link. */
+    if (c->ca_file && !c->rfb->tlsSession) {
+        emit_log(c, VNC_LOG_ERROR,
+                 "connection refused: a CA is configured but the transport is not "
+                 "TLS (possible protocol-version/security downgrade)");
+        rfbClientCleanup(c->rfb);
         c->rfb = NULL;
         return false;
     }

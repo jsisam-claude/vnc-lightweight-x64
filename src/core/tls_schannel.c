@@ -246,9 +246,17 @@ static BOOL verify_server_cert(rfbClient *client, sc_tls *tls, HCERTSTORE ca)
 
     /* Hostname + SSL policy check. */
     wchar_t whost[256];
-    ZeroMemory(whost, sizeof(whost)); /* overlong host -> empty -> policy rejects */
-    MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
-                        -1, whost, 256);
+    ZeroMemory(whost, sizeof(whost));
+    if (MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
+                            -1, whost, 256) <= 0) {
+        /* Host too long/invalid to encode: fail closed. (Do NOT proceed with a
+         * possibly-unterminated name — that is a stack over-read — nor an empty
+         * one.) The name is user-typed, so this is not attacker-reachable, but
+         * verification must never continue on a bad name. */
+        rfbClientLog("Server name too long to verify; refusing.\n");
+        CertFreeCertificateChain(chain);
+        goto done;
+    }
     SSL_EXTRA_CERT_CHAIN_POLICY_PARA ssl_para;
     ZeroMemory(&ssl_para, sizeof(ssl_para));
     ssl_para.cbSize = sizeof(ssl_para);
@@ -301,8 +309,9 @@ static BOOL schannel_handshake(rfbClient *client, sc_tls *tls, const char *ca_pa
 
     wchar_t whost[256];
     ZeroMemory(whost, sizeof(whost));
-    MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
-                        -1, whost, 256);
+    if (MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
+                            -1, whost, 256) <= 0)
+        return FALSE; /* host too long: fail closed (would be an unterminated target name) */
 
     DWORD req = ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_CONFIDENTIALITY |
                 ISC_REQ_REPLAY_DETECT | ISC_REQ_SEQUENCE_DETECT |

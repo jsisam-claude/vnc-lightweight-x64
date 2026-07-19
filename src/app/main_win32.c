@@ -25,6 +25,7 @@ static ViewerApp g_app;
 
 static wchar_t g_pw_buf[512];
 static BOOL    g_pw_ok;
+static BOOL    g_pw_active; /* a password prompt is currently open (re-entrancy guard) */
 
 static LRESULT CALLBACK pw_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -139,6 +140,15 @@ static BOOL prompt_password(HWND parent, HINSTANCE hinst)
 
 void app_request_password(ViewerApp *app)
 {
+    /* Password requests are only legitimate DURING the pre-connect handshake. A
+     * compromised worker could otherwise send VNC_EVT_PASSWORD_REQ mid-session to
+     * phish the user (a prompt they might mistake for a local/UAC dialog), or
+     * flood it: each prompt runs a nested message loop, and a re-entrant prompt
+     * would recurse without bound -> stack overflow / lockup of the TRUSTED
+     * process. Gate on both: not-yet-connected, and not-already-prompting. */
+    if (app->connected || g_pw_active)
+        return;
+    g_pw_active = TRUE;
     HINSTANCE hinst = (HINSTANCE)GetModuleHandleW(NULL);
     /* g_pw_buf holds up to 511 wchars; UTF-8 needs up to 3 bytes/char (+NUL).
      * A 512-byte buffer silently failed (WideCharToMultiByte -> 0) for long or
@@ -156,6 +166,7 @@ void app_request_password(ViewerApp *app)
         vnc_channel_send(&app->ch, VNC_CMD_PASSWORD, "", 0);
     }
     SecureZeroMemory(g_pw_buf, sizeof(g_pw_buf));
+    g_pw_active = FALSE;
 }
 
 /* ---- session lifecycle (startup + reconnect) ----------------------------- */
