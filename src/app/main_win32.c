@@ -175,7 +175,13 @@ void app_stop_session(ViewerApp *app)
         vnc_channel_send(&app->ch, VNC_CMD_SHUTDOWN, NULL, 0);
     sandbox_cleanup(app); /* closes channel, waits for / terminates worker */
     if (app->reader_thread) {
-        WaitForSingleObject(app->reader_thread, 1000);
+        /* Wait indefinitely: sandbox_cleanup already closed the event channel, so
+         * the reader's blocking recv returns at once and it exits. A bounded wait
+         * could return while the reader is still live and then app_start_session
+         * would spawn a second reader that races this one over app->audio and the
+         * event stream. The reader only PostMessages (never SendMessage), so it
+         * cannot deadlock against this (non-pumping) thread. */
+        WaitForSingleObject(app->reader_thread, INFINITE);
         CloseHandle(app->reader_thread);
         app->reader_thread = NULL;
     }
@@ -460,6 +466,15 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
             freopen_s(&f, "CONOUT$", "w", stdout);
             freopen_s(&f, "CONOUT$", "w", stderr);
         }
+        /* vnc_headless_main parses its target positionally as argv[1]; drop the
+         * "--headless" mode token so it doesn't become the target. (The --worker
+         * path needs no such strip: worker_main parses by key, not position.) */
+        int w = 1;
+        for (int i = 1; i < argc; i++)
+            if (wcscmp(argv[i], L"--headless") != 0)
+                argv[w++] = argv[i];
+        argc = w;
+        argv[argc] = NULL;
         int rc = run_utf8_mode(vnc_headless_main, argv, argc);
         free_wargv(argv);
         return rc;

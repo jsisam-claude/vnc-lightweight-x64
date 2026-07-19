@@ -117,12 +117,17 @@ void waveout_reset(waveout_sink *s)
 {
     if (!s || !s->ok)
         return;
-    waveOutReset(s->hwo); /* marks all buffers done */
+    /* End of stream: PLAY OUT whatever is buffered, don't discard it. A short
+     * sound (fewer than WO_PREBUFFER chunks) never tripped the prebuffer
+     * threshold, so start playback now or it would be silently thrown away;
+     * longer streams are already playing and simply drain. Calling waveOutReset()
+     * here (the old behavior) discarded queued-but-unplayed buffers and clipped
+     * the tail of every stream — and made short beeps inaudible entirely. */
+    if (!s->started) {
+        waveOutRestart(s->hwo);
+        s->started = TRUE;
+    }
     reclaim(s);
-    waveOutPause(s->hwo);
-    s->next = 0;
-    s->queued = 0;
-    s->started = FALSE;
 }
 
 void waveout_destroy(waveout_sink *s)

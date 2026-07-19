@@ -98,9 +98,15 @@ static void w_on_update(void *user, int x, int y, int wdt, int hgt)
         return;
 
     uint8_t *dst = vnc_shm_pixels(w->shm);
+    size_t cap = w->shm_capacity;
     for (int row = 0; row < hgt; row++) {
         size_t off = ((size_t)(y + row) * (size_t)fbw + (size_t)x) * 4u;
-        memcpy(dst + off, fb + off, (size_t)wdt * 4u);
+        size_t rb = (size_t)wdt * 4u;
+        /* Defense in depth: the framebuffer size is already capped to the shm at
+         * allocation, but never let a copy run past the mapping regardless. */
+        if (off > cap || rb > cap - off)
+            break;
+        memcpy(dst + off, fb + off, rb);
     }
     vnc_ipc_rect r = { (uint16_t)x, (uint16_t)y, (uint16_t)wdt, (uint16_t)hgt };
     vnc_channel_send(&w->ch, VNC_EVT_UPDATE, &r, sizeof(r));
@@ -329,6 +335,10 @@ static int worker_run(worker *w, const char *host, int port,
     if (ca_file && ca_file[0])
         vnc_client_set_ca_file(w->client, ca_file);
     vnc_client_set_view_only(w->client, view_only);
+    /* Bound the core's framebuffer allocation to what our shared framebuffer can
+     * hold, so a server cannot announce an oversized desktop and drive an
+     * out-of-bounds copy in w_on_update. */
+    vnc_client_set_max_framebuffer_bytes(w->client, w->shm_capacity);
 
     vnc_ipc_hello hello = { VNC_IPC_MAGIC, VNC_IPC_VERSION };
     vnc_channel_send(&w->ch, VNC_EVT_HELLO, &hello, sizeof(hello));
@@ -402,7 +412,12 @@ static int worker_run(worker *w, const char *host, int port,
     mtx_unlock(&w->api_lock);
 
 #ifdef _WIN32
-    WaitForSingleObject(rt, 1000);
+    /* Wait indefinitely (as pthread_join does on POSIX): the reader dispatches
+     * into w->client / w->shm, which we free right after returning, so it MUST be
+     * dead first. It exits as soon as the UI closes the command channel (which it
+     * does on seeing the status above, or when it or its process goes away), so a
+     * bounded wait risked freeing the client out from under a still-live reader. */
+    WaitForSingleObject(rt, INFINITE);
     CloseHandle(rt);
 #else
     pthread_join(rt, NULL);

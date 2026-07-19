@@ -124,6 +124,17 @@ endif()
 set_source_files_properties(${VENDOR_SOURCES} PROPERTIES
   COMPILE_OPTIONS "${VENDOR_WARN_FLAGS}")
 
+# tls_schannel.c is OUR hand-written, security-critical code (it parses the
+# untrusted VeNCrypt/TLS handshake). It only rides in VENDOR_SOURCES because it
+# plugs into libvncclient's TLS seam (TLS_TU) — it must NOT inherit the vendored
+# warning/SDL suppressions. Override it back to our strict flags so /W4 /sdl
+# scrutinize it like the rest of src/. (Windows-only: elsewhere TLS_TU is the
+# genuinely-vendored gnutls/none backend.)
+if(WIN32)
+  set_source_files_properties(${CMAKE_SOURCE_DIR}/src/core/tls_schannel.c
+    PROPERTIES COMPILE_OPTIONS "${OUR_WARN_FLAGS}")
+endif()
+
 # Runtime hardening for the Windows binaries. The worker is spawned with STRICT
 # Control Flow Guard and CET shadow-stack mitigations ALWAYS_ON, so its image
 # MUST be built /guard:cf (and marked /CETCOMPAT) or CreateProcess refuses it.

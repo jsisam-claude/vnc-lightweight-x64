@@ -23,6 +23,10 @@ void clipboard_from_server(ViewerApp *app, const char *text, unsigned len)
     if (!h)
         return;
     wchar_t *dst = (wchar_t *)GlobalLock(h);
+    if (!dst) {          /* lock failed: don't dereference NULL */
+        GlobalFree(h);
+        return;
+    }
     int got = (wneed > 0)
                 ? MultiByteToWideChar(CP_UTF8, 0, text, (int)len, dst, wneed)
                 : 0;

@@ -441,10 +441,17 @@ static void post_blob(HWND hwnd, UINT msg, void *blob)
 DWORD WINAPI viewer_reader_thread(LPVOID arg)
 {
     ViewerApp *app = (ViewerApp *)arg;
+    /* Per-thread receive buffer (heap, not static): if a reconnect ever overlaps
+     * a still-draining previous reader, two readers must not share one scratch
+     * buffer and tear each other's frames. 1 MiB is too large for the stack. */
+    uint8_t *buf = malloc(VNC_IPC_MAX_PAYLOAD);
+    if (!buf) {
+        PostMessageW(app->hwnd, WM_APP_STATUS, VNC_STATUS_DISCONNECTED, 0);
+        return 0;
+    }
     for (;;) {
         uint32_t type = 0, len = 0;
-        static uint8_t buf[VNC_IPC_MAX_PAYLOAD];
-        int r = vnc_channel_recv(&app->ch, &type, buf, sizeof(buf), &len);
+        int r = vnc_channel_recv(&app->ch, &type, buf, VNC_IPC_MAX_PAYLOAD, &len);
         if (r <= 0)
             break; /* worker gone or malformed frame -> tear down */
 
@@ -500,7 +507,9 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
         /* Audio is handled directly on this reader thread (off the GUI thread)
          * to keep playback latency low. */
         case VNC_EVT_AUDIO_FORMAT:
-            if (len == sizeof(vnc_ipc_audio_cfg)) {
+            /* Honor the user's opt-in at the trust boundary: a compromised worker
+             * must not be able to force audio playback the user never enabled. */
+            if (app->want_audio && len == sizeof(vnc_ipc_audio_cfg)) {
                 vnc_ipc_audio_cfg *a = (void *)buf;
                 if (app->audio) waveout_destroy(app->audio);
                 app->audio = waveout_create(a->sample_format, a->channels,
@@ -539,6 +548,7 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
         }
     }
 teardown:
+    free(buf);
     /* Signal disconnect so the UI can close. */
     PostMessageW(app->hwnd, WM_APP_STATUS, VNC_STATUS_DISCONNECTED, 0);
     return 0;

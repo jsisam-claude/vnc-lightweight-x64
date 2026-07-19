@@ -28,6 +28,7 @@ struct vnc_client {
     char *encodings; /* owned copy, or NULL for library default */
     char *ca_file;   /* owned copy, or NULL */
     bool view_only;
+    size_t max_fb_bytes; /* 0 = unlimited; else refuse larger framebuffers */
     qa_state audio_state;
 };
 
@@ -74,6 +75,17 @@ static rfbBool cb_malloc_framebuffer(rfbClient *rfb)
     size_t bytes = pixels * bpp;
     if (bytes / bpp != pixels)
         return FALSE;
+
+    /* Refuse a desktop larger than the embedder's backing store (e.g. the
+     * worker's shared framebuffer). Without this a server can pick a size that
+     * passes the dimension caps but overflows the store when pixels are copied
+     * out. Failing here aborts the RFB handshake — the connection fails closed. */
+    if (c->max_fb_bytes && bytes > c->max_fb_bytes) {
+        emit_log(c, VNC_LOG_ERROR,
+                 "rejecting framebuffer %dx%d (%zu bytes > %zu-byte store)",
+                 w, h, bytes, c->max_fb_bytes);
+        return FALSE;
+    }
 
     uint8_t *fb = malloc(bytes);
     if (!fb) {
@@ -330,6 +342,11 @@ void vnc_client_set_encodings(vnc_client *c, const char *encodings)
 void vnc_client_set_view_only(vnc_client *c, bool view_only)
 {
     c->view_only = view_only;
+}
+
+void vnc_client_set_max_framebuffer_bytes(vnc_client *c, size_t max_bytes)
+{
+    c->max_fb_bytes = max_bytes;
 }
 
 void vnc_client_set_ca_file(vnc_client *c, const char *ca_file)

@@ -97,6 +97,17 @@ void vnc_client_set_ca_file(vnc_client *c, const char *ca_file);
 /* Set view-only (never send input). */
 void vnc_client_set_view_only(vnc_client *c, bool view_only);
 
+/* Upper bound (bytes) on the framebuffer the core will allocate for a server-
+ * announced desktop size. An embedder that copies decoded pixels into a fixed
+ * backing store (e.g. the worker's shared-memory framebuffer) MUST set this to
+ * that store's capacity: a hostile server can otherwise announce a resolution
+ * that passes the dimension caps yet is far larger than the store, and the
+ * subsequent pixel copy would write out of bounds. When the requested size
+ * exceeds this, cb_malloc_framebuffer refuses and the connection fails closed.
+ * 0 (default) means "only the VNC_MAX_FB_* dimension caps apply" (the headless
+ * tool owns the buffer it reads, so it needs no store limit). */
+void vnc_client_set_max_framebuffer_bytes(vnc_client *c, size_t max_bytes);
+
 /* Connect + full RFB handshake to host:port. Returns false on failure. */
 bool vnc_client_connect(vnc_client *c, const char *host, int port);
 

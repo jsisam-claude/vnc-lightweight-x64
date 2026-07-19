@@ -73,8 +73,15 @@ static uint32_t vk_to_keysym(WPARAM vk, LPARAM lparam)
     if (GetKeyboardState(ks)) {
         WCHAR chars[4];
         int n = ToUnicode((UINT)vk, (UINT)((lparam >> 16) & 0xFF), ks, chars, 4, 0);
-        if (n == 1 && chars[0] >= 0x20)
-            return (uint32_t)chars[0]; /* Latin-1 / Unicode == keysym below 0x100 */
+        if (n == 1 && chars[0] >= 0x20) {
+            /* X11 keysyms: for Latin-1 (<0x100) the keysym IS the codepoint; above
+             * that it is 0x01000000 | codepoint. Returning the bare codepoint for
+             * e.g. Cyrillic/CJK would send a wrong keysym on the non-extended-key
+             * fallback path (servers without QEMU Extended Key Event). */
+            if (chars[0] < 0x100)
+                return (uint32_t)chars[0];
+            return 0x01000000u | (uint32_t)chars[0];
+        }
     }
     return 0;
 }

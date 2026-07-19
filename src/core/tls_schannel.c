@@ -423,8 +423,10 @@ rfbBool HandleVeNCryptAuth(rfbClient *client)
         rfbCredential *cred = client->GetCredential(client, rfbCredentialTypeX509);
         if (cred) {
             if (cred->x509Credential.x509CACertFile) {
-                strncpy(ca_buf, cred->x509Credential.x509CACertFile, sizeof(ca_buf) - 1);
-                ca_buf[sizeof(ca_buf) - 1] = 0;
+                /* strncpy_s (not strncpy): this TU is now built /W4 /sdl like the
+                 * rest of our code, which bans the unchecked CRT string calls. */
+                strncpy_s(ca_buf, sizeof(ca_buf),
+                          cred->x509Credential.x509CACertFile, _TRUNCATE);
                 ca_path = ca_buf;
             }
             /* We own the returned credential; free the fields our
