@@ -170,7 +170,13 @@ static char *cb_get_password(rfbClient *rfb)
      * downgraded the transport (e.g. by announcing RFB 3.3, whose legacy security
      * path bypasses the VeNCrypt pin in SetClientAuthSchemes) and the DES response
      * would travel in CLEARTEXT — offline-crackable. Refuse: returning NULL aborts
-     * the authentication and the connection, before the password leaves the host. */
+     * the authentication and the connection, before the password leaves the host.
+     *
+     * NOTE on the signal: on the SHIPPED SChannel backend `tlsSession != NULL`
+     * means X509-verified TLS (it refuses anonymous/non-X509 VeNCrypt), so this is
+     * exact. The GnuTLS *reference* backend (Linux test only, never shipped) is
+     * permissive and sets tlsSession for anonymous TLS too, so on that build the
+     * authoritative anon defense is SChannel's refusal, not this guard. */
     if (c->ca_file && !rfb->tlsSession) {
         emit_log(c, VNC_LOG_ERROR,
                  "refusing to send a password over a non-TLS transport "
@@ -404,8 +410,12 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
     /* Final downgrade guard: if the user required TLS (CA set) but no TLS session
      * is active, the whole handshake ran in cleartext — e.g. an RFB 3.3 downgrade
      * that offered "None" (no password callback fires, so cb_get_password's guard
-     * never runs). Tear the session down NOW, before we request any framebuffer,
-     * so no pixels or keystrokes ever traverse the cleartext link. */
+     * never runs). rfbInitClient has by now sent SetPixelFormat/SetEncodings and
+     * one FramebufferUpdateRequest in the clear (none of which carry secrets); tear
+     * the session down NOW — before the pump loop runs — so no framebuffer pixels
+     * are ever displayed and no keystrokes/clipboard ever traverse the cleartext
+     * link. (On SChannel this is a backstop; the primary block is the anon refusal
+     * plus SetClientAuthSchemes above.) */
     if (c->ca_file && !c->rfb->tlsSession) {
         emit_log(c, VNC_LOG_ERROR,
                  "connection refused: a CA is configured but the transport is not "

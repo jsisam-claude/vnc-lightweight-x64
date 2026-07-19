@@ -504,6 +504,11 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE prev, PWSTR cmdline, int show)
                 argv[w++] = argv[i];
         argc = w;
         argv[argc] = NULL;
+        /* SECURITY: unlike the default UI mode, --headless parses the untrusted
+         * RFB stream IN THIS PROCESS with NO AppContainer sandbox. It is a
+         * diagnostic tool — only point it at a server you trust. */
+        fwprintf(stderr, L"[vncviewer] --headless runs the RFB decoder WITHOUT the "
+                         L"sandbox; use only against a TRUSTED server.\n");
         int rc = run_utf8_mode(vnc_headless_main, argv, argc);
         free_wargv(argv);
         return rc;

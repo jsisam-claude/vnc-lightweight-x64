@@ -113,6 +113,7 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     PSID ac_sid = NULL;
     HANDLE cmd_rd = NULL, cmd_wr = NULL, evt_rd = NULL, evt_wr = NULL;
     HANDLE fbmap_inh = NULL;
+    HANDLE job = NULL;
     LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
     SID_AND_ATTRIBUTES cap = {0};
     PSID inet_sid = NULL;
@@ -274,14 +275,43 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         p->audio ? L" --audio" : L"",
         ca_arg);
 
+    /* Job object: OS-enforced availability limits (the AppContainer bounds what
+     * the worker can REACH; the Job bounds what it can CONSUME). This is the
+     * documented "second enforcement" against a compromised worker — in-process
+     * caps are moot once an attacker runs their own code. Cap committed memory and
+     * forbid child processes (ActiveProcessLimit=1); kill the worker if this job
+     * handle closes. Best-effort: if the Job can't be created we still spawn (the
+     * AppContainer remains the primary, fail-closed containment). The worker is
+     * created SUSPENDED so the limits bind before it runs a single instruction. */
+    job = CreateJobObjectW(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli;
+        ZeroMemory(&jeli, sizeof(jeli));
+        jeli.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+            JOB_OBJECT_LIMIT_PROCESS_MEMORY |
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+            JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+        jeli.BasicLimitInformation.ActiveProcessLimit = 1;
+        jeli.ProcessMemoryLimit = (SIZE_T)512 * 1024 * 1024;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                     &jeli, sizeof(jeli)))
+            diag_win32("sandbox: SetInformationJobObject", GetLastError());
+    } else {
+        diag_win32("sandbox: CreateJobObject (continuing without job limits)",
+                   GetLastError());
+    }
+
     STARTUPINFOEXW si = {0};
     si.StartupInfo.cb = sizeof(si);
     si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi = {0};
 
-    diag_logf(DIAG_INFO, "sandbox: launching worker (ACG/CIG/no-win32k/CFG/CET)");
+    diag_logf(DIAG_INFO, "sandbox: launching worker (ACG/CIG/no-win32k/CFG/CET, job=%s)",
+              job ? "yes" : "no");
     if (!CreateProcessW(exe_path, cmdline, NULL, NULL, TRUE,
-                        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW |
+                        CREATE_SUSPENDED,
                         NULL, exe_dir, &si.StartupInfo, &pi)) {
         DWORD e = GetLastError();
         diag_win32("sandbox: CreateProcess (worker)", e);
@@ -292,8 +322,13 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         fprintf(stderr, "sandbox: CreateProcess failed (err %lu)\n", e);
         goto cleanup;
     }
+    /* Bind the job BEFORE resuming, so its limits apply from the first instruction. */
+    if (job && !AssignProcessToJobObject(job, pi.hProcess))
+        diag_win32("sandbox: AssignProcessToJobObject", GetLastError());
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     app->worker_process = pi.hProcess;
+    app->worker_job = job; job = NULL; /* ownership moves to app (closed in cleanup) */
     diag_logf(DIAG_INFO, "sandbox: worker started (pid=%lu)",
               (unsigned long)pi.dwProcessId);
 
@@ -312,6 +347,7 @@ cleanup:
         if (cmd_wr) CloseHandle(cmd_wr);
         if (evt_rd) CloseHandle(evt_rd);
     }
+    if (job) CloseHandle(job); /* only set here on failure; on success it moved to app */
     if (attrs) { DeleteProcThreadAttributeList(attrs); HeapFree(GetProcessHeap(), 0, attrs); }
     if (inet_sid) FreeSid(inet_sid);
     if (ac_sid) FreeSid(ac_sid);
@@ -342,4 +378,7 @@ void sandbox_cleanup(ViewerApp *app)
         app->worker_process = NULL;
     }
     if (app->ch.rd) { CloseHandle((HANDLE)app->ch.rd); app->ch.rd = 0; }
+    /* Closing the job kills any process still in it (KILL_ON_JOB_CLOSE) — a final
+     * backstop if the worker somehow outlived the terminate above. */
+    if (app->worker_job) { CloseHandle(app->worker_job); app->worker_job = NULL; }
 }

@@ -35,7 +35,18 @@ AppContainer with:
   high-entropy + bottom-up ASLR, strict handle checks, extension-point disable,
   strict CFG, CET shadow stacks;
 - access to exactly two IPC pipe ends and the framebuffer mapping, each DACL'd to
-  the worker's AppContainer SID — nothing else.
+  the worker's AppContainer SID — nothing else;
+- a **Job object** as second-line, OS-enforced *availability* containment (the
+  AppContainer bounds what the worker can reach; the Job bounds what it can
+  consume): a ~512 MB committed-memory cap and `ActiveProcessLimit = 1` (no child
+  processes), with `KILL_ON_JOB_CLOSE`. The worker is created suspended and
+  assigned to the Job before it runs an instruction, so a *compromised* worker
+  (running its own code, past every in-process cap) still cannot exhaust host
+  memory or fork-bomb.
+
+The **`--headless`** diagnostic mode is the one exception to the sandbox: it
+parses the RFB stream in-process with no AppContainer (like the Linux `vnctest`),
+so it prints a warning and should be pointed only at a trusted server.
 
 **One binary does not weaken the boundary.** The RFB-decoder code is *compiled
 into* `vncviewer.exe`, but it is only ever *executed* in the `--worker` process:

@@ -38,6 +38,7 @@ typedef struct {
     char        shm_name[64];
     BOOL        fb_granted;   /* framebuffer-section DACL granted (once, not per reconnect) */
     HANDLE      worker_process;
+    HANDLE      worker_job;   /* Job object bounding worker memory + child processes */
     HANDLE      reader_thread;
 
     /* Window + presentation */

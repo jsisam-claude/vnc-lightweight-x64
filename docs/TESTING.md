@@ -116,6 +116,18 @@ memory-safety findings (only GnuTLS exit leaks, which the SChannel build does no
 have). On Windows, repeat against QEMU using `--ca` with a PEM bundle and confirm
 the SChannel path rejects a wrong/expired/hostname-mismatched cert.
 
+**Caveat — the GnuTLS reference is more permissive than the product.** The
+shipped SChannel backend refuses anonymous/non-X509 VeNCrypt subtypes and
+anonymous TLS (security type 18); the vendored GnuTLS reference does NOT (it will
+complete anonymous TLS). So two properties are *shipped-backend guarantees*
+verified only on Windows, not by the Linux GnuTLS test: (1) rejection of an
+anonymous-TLS / non-X509 downgrade when `--ca` is set, and (2) the
+`tlsSession`-based cleartext-downgrade guard being exact (on GnuTLS, `tlsSession`
+can be set for anon TLS). When testing on Windows with `--ca`, also confirm a
+server offering only anonymous TLS (`-object tls-creds-anon`) is rejected, and a
+server forced to `RFB 003.003` offering `None`/`VncAuth` is rejected (no cleartext
+downgrade, no password sent).
+
 ## Building on Windows
 
 Pick the preset that matches your toolchain (the generator pins a toolset, so a
