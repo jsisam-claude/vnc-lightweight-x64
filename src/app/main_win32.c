@@ -157,9 +157,14 @@ void app_request_password(ViewerApp *app)
     if (prompt_password(app->hwnd, hinst)) {
         int n = WideCharToMultiByte(CP_UTF8, 0, g_pw_buf, -1, utf8, sizeof(utf8),
                                     NULL, NULL);
-        if (n > 0)
-            vnc_channel_send(&app->ch, VNC_CMD_PASSWORD, utf8, (uint32_t)(n - 1));
-        else
+        /* The worker blocks in w_get_password until it receives exactly one
+         * VNC_CMD_PASSWORD reply, so we must ALWAYS send one. A password whose
+         * UTF-8 form exceeds the channel cap would be rejected by the send (return
+         * false) and leave the worker hung; fall back to an empty reply so auth
+         * fails gracefully instead of hanging. (Unreachable in practice — VNC auth
+         * is ~8 chars — but the reply must never be silently dropped.) */
+        if (n <= 0 ||
+            !vnc_channel_send(&app->ch, VNC_CMD_PASSWORD, utf8, (uint32_t)(n - 1)))
             vnc_channel_send(&app->ch, VNC_CMD_PASSWORD, "", 0);
         SecureZeroMemory(utf8, sizeof(utf8));
     } else {
