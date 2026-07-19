@@ -172,8 +172,10 @@ vnc_shm *vnc_shm_create(size_t max_pixel_bytes, char *name_out, size_t name_cap)
     s->base = base;
     s->total_bytes = total;
     s->fd = fd;
-    strncpy(name_out, s->name, name_cap - 1);
-    name_out[name_cap - 1] = '\0';
+    if (name_out && name_cap) { /* guard: name_cap-1 would underflow at 0 */
+        strncpy(name_out, s->name, name_cap - 1);
+        name_out[name_cap - 1] = '\0';
+    }
     return s;
 }
 

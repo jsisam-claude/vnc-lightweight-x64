@@ -108,6 +108,19 @@ static BOOL prompt_password(HWND parent, HINSTANCE hinst)
             SendMessageW(dlg, WM_COMMAND, IDCANCEL, 0);
             continue;
         }
+        /* If the session dies while this prompt is open (worker crash mid-auth),
+         * do NOT dispatch the status here: its handler tears the session down and
+         * restarts it (a whole new worker/channel) re-entrantly underneath the
+         * open dialog, and the password would then be sent to the wrong session.
+         * Cancel the prompt and re-post the status so teardown runs in the OUTER
+         * loop once this dialog is gone. */
+        if (msg.hwnd == parent && msg.message == WM_APP_STATUS &&
+            (int)msg.wParam != VNC_STATUS_CONNECTED) {
+            g_pw_ok = FALSE;
+            DestroyWindow(dlg);
+            PostMessageW(parent, WM_APP_STATUS, msg.wParam, 0);
+            break;
+        }
         if (!IsDialogMessageW(dlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

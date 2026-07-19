@@ -152,7 +152,14 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
         goto cleanup;
     }
     if (ac_sid) {
-        grant_sid_to_handle(fbmap, ac_sid, FILE_MAP_READ | FILE_MAP_WRITE);
+        /* The framebuffer section is created once and persists across reconnects;
+         * grant its DACL only once (the SID is profile-stable) so repeated
+         * reconnects don't keep re-adding ACEs to a long-lived object. The pipe
+         * ends are fresh each spawn, so they must be granted every time. */
+        if (!app->fb_granted) {
+            grant_sid_to_handle(fbmap, ac_sid, FILE_MAP_READ | FILE_MAP_WRITE);
+            app->fb_granted = TRUE;
+        }
         grant_sid_to_handle(cmd_rd, ac_sid, GENERIC_READ | SYNCHRONIZE);
         grant_sid_to_handle(evt_wr, ac_sid, GENERIC_WRITE | SYNCHRONIZE);
         /* The worker must read the CA bundle for VeNCrypt X509; grant its
@@ -167,7 +174,13 @@ BOOL sandbox_spawn_worker(ViewerApp *app, const WorkerSpawnParams *p)
     InitializeProcThreadAttributeList(NULL, 3, 0, &attr_size);
     attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attr_size);
     if (!attrs) goto cleanup;
-    if (!InitializeProcThreadAttributeList(attrs, 3, 0, &attr_size)) goto cleanup;
+    if (!InitializeProcThreadAttributeList(attrs, 3, 0, &attr_size)) {
+        /* Not initialized: free the raw memory but do NOT DeleteProcThread... it
+         * (that would walk an uninitialized list header). */
+        HeapFree(GetProcessHeap(), 0, attrs);
+        attrs = NULL;
+        goto cleanup;
+    }
 
     /* (1) Security capabilities: AppContainer SID + internetClient capability. */
     SECURITY_CAPABILITIES sec_caps = {0};
@@ -307,8 +320,13 @@ cleanup:
 
 void sandbox_cleanup(ViewerApp *app)
 {
+    /* Close the COMMAND (write) end first and drive the worker to exit; the
+     * reader thread is blocked in ReadFile on ch.rd, and closing a handle that
+     * another thread is actively reading is undefined on Windows. The worker's
+     * exit closes its event-write end, which delivers EOF and unblocks the reader
+     * cleanly — so we only close ch.rd LAST, once the worker is gone and the
+     * reader is no longer inside that ReadFile. */
     if (app->ch.wr) { CloseHandle((HANDLE)app->ch.wr); app->ch.wr = 0; }
-    if (app->ch.rd) { CloseHandle((HANDLE)app->ch.rd); app->ch.rd = 0; }
     if (app->worker_process) {
         /* Ask nicely first (SHUTDOWN was sent by the caller), then ensure exit.
          * The worker's exit code is a useful triage signal — e.g. a nonzero code
@@ -323,4 +341,5 @@ void sandbox_cleanup(ViewerApp *app)
         CloseHandle(app->worker_process);
         app->worker_process = NULL;
     }
+    if (app->ch.rd) { CloseHandle((HANDLE)app->ch.rd); app->ch.rd = 0; }
 }

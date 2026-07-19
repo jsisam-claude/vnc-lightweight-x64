@@ -366,6 +366,22 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
     if (c->encodings)
         c->rfb->appData.encodingsString = c->encodings;
 
+    /* If the user supplied a CA they are asking for authenticated, encrypted
+     * transport. libvncclient otherwise accepts the FIRST security type the
+     * server offers, so a hostile server or a MITM could offer None/VncAuth
+     * ahead of VeNCrypt and downgrade the whole session to CLEARTEXT — framebuffer
+     * and every forwarded keystroke (including passwords typed into the guest) in
+     * the clear — without ever entering the (correctly fail-closed) TLS path.
+     * Restrict the accepted security types to VeNCrypt so a downgrade cannot be
+     * negotiated: if the server does not offer VeNCrypt there is no common type
+     * and the handshake fails closed. The SChannel/GnuTLS backend then further
+     * restricts VeNCrypt to X509 subtypes and verifies the certificate against
+     * this CA. (SetClientAuthSchemes copies the list; the library frees it.) */
+    if (c->ca_file) {
+        const uint32_t require_vencrypt[] = { rfbVeNCrypt };
+        SetClientAuthSchemes(c->rfb, require_vencrypt, 1);
+    }
+
     /* Pass no argv so nothing is parsed from the command line. */
     int argc = 0;
     if (!rfbInitClient(c->rfb, &argc, NULL)) {

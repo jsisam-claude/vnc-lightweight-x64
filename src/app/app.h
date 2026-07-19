@@ -36,6 +36,7 @@ typedef struct {
     vnc_shm    *shm;
     size_t      shm_bytes;
     char        shm_name[64];
+    BOOL        fb_granted;   /* framebuffer-section DACL granted (once, not per reconnect) */
     HANDLE      worker_process;
     HANDLE      reader_thread;
 
