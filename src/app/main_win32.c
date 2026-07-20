@@ -339,7 +339,7 @@ static void recents_load(HWND combo)
     for (int i = 0; i < VNC_RECENT_MAX; i++) {
         wchar_t name[16];
         _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
-        wchar_t val[300];
+        wchar_t val[300] = {0}; /* zero-init: a non-NUL-terminated REG_SZ won't leak tail */
         DWORD cb = sizeof(val), type = 0;
         if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
             type == REG_SZ) {
@@ -365,7 +365,7 @@ static void recents_save(const wchar_t *host, int port)
     for (int i = 0; i < VNC_RECENT_MAX && n < VNC_RECENT_MAX; i++) {
         wchar_t name[16];
         _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
-        wchar_t val[300];
+        wchar_t val[300] = {0}; /* zero-init: a non-NUL-terminated REG_SZ won't leak tail */
         DWORD cb = sizeof(val), type = 0;
         if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
             type == REG_SZ) {
@@ -506,10 +506,15 @@ static BOOL prompt_connection(ViewerApp *app, HINSTANCE hinst)
     while ((got = GetMessageW(&msg, NULL, 0, 0)) != 0) {
         if (got == -1)
             break;
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
+        /* When the recents dropdown is open, let Enter/Esc reach the combo box
+         * (accept the highlighted entry / close the list) instead of triggering
+         * Connect / Cancel on the whole dialog. */
+        BOOL combo_open = (BOOL)SendMessageW(GetDlgItem(dlg, 201),
+                                             CB_GETDROPPEDSTATE, 0, 0);
+        if (!combo_open && msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
             SendMessageW(dlg, WM_COMMAND, 1, 0); continue;
         }
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+        if (!combo_open && msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
             SendMessageW(dlg, WM_COMMAND, 2, 0); continue;
         }
         if (!IsDialogMessageW(dlg, &msg)) {

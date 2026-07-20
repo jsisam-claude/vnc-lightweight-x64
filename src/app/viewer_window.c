@@ -158,16 +158,35 @@ static void do_screenshot(ViewerApp *app)
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn))
         return;
-    char path[MAX_PATH * 3 + 1];
-    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, path, sizeof(path), NULL, NULL) <= 0)
-        return;
-    bool ok = png_write_bgrx(path, vnc_shm_pixels(app->shm),
-                             app->fb_width, app->fb_height);
+    /* Use the wide path directly: the CRT's char* fopen would mis-encode a
+     * non-ASCII path (accented / CJK user folder) under the ANSI code page. */
+    bool ok = png_write_bgrx_w(file, vnc_shm_pixels(app->shm),
+                               app->fb_width, app->fb_height);
     diag_logf(ok ? DIAG_INFO : DIAG_ERROR, "screenshot %s (%dx%d)",
               ok ? "saved" : "FAILED", app->fb_width, app->fb_height);
     if (!ok)
         MessageBoxW(app->hwnd, L"Failed to save the screenshot.",
                     L"VNC Lightweight", MB_OK | MB_ICONERROR);
+}
+
+/* If auto-resize is on, ask the guest to match the current client size — but ONLY
+ * if that size fits the shared framebuffer. A window larger than the max desktop
+ * we can hold (VIEWER_SHM_BYTES ~ 4K) must not drive a server resize, because the
+ * reader thread rejects an oversized EVT_RESIZE and tears the session down; so a
+ * big window would otherwise self-inflict a disconnect. Leave the guest as-is in
+ * that case (the view just letterboxes). */
+static void maybe_request_guest_resize(ViewerApp *app)
+{
+    if (!app->auto_resize || !app->connected || app->fullscreen || !app->ch.wr)
+        return;
+    RECT rc; GetClientRect(app->hwnd, &rc);
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384)
+        return;
+    if ((size_t)w * (size_t)h * 4u > vnc_shm_capacity(app->shm))
+        return;
+    vnc_ipc_request_resize r = { (uint16_t)w, (uint16_t)h };
+    vnc_channel_send(&app->ch, VNC_CMD_REQUEST_RESIZE, &r, sizeof(r));
 }
 
 /* Append our action items to the window's System menu (reachable via Alt+Space
@@ -189,7 +208,7 @@ static void setup_system_menu(HWND hwnd)
     AppendMenuW(m, MF_STRING, IDM_LOCKCURSOR, L"Lock cursor to window");
     AppendMenuW(m, MF_STRING, IDM_SCREENSHOT, L"Save screenshot\x2026");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, IDM_DISCONNECT, L"Disconnect");
+    AppendMenuW(m, MF_STRING, IDM_DISCONNECT, L"Disconnect and exit");
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -249,18 +268,22 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break; /* fall through to DefWindowProc for real system commands */
 
     case WM_EXITSIZEMOVE:
-        /* User finished resizing the window: optionally push the new size to the
-         * guest (debounced — we don't send during the drag). Re-clip if locked. */
-        if (app->auto_resize && app->connected && !app->fullscreen && app->ch.wr) {
-            RECT rc; GetClientRect(hwnd, &rc);
-            int w = rc.right - rc.left, h = rc.bottom - rc.top;
-            if (w > 0 && h > 0 && w <= 16384 && h <= 16384) {
-                vnc_ipc_request_resize r = { (uint16_t)w, (uint16_t)h };
-                vnc_channel_send(&app->ch, VNC_CMD_REQUEST_RESIZE, &r, sizeof(r));
-            }
-        }
+        /* User finished dragging the border: push the new size to the guest
+         * (debounced — nothing sent during the drag) and re-clip if locked. */
+        maybe_request_guest_resize(app);
         apply_cursor_lock(app);
         return 0;
+
+    case WM_SIZE:
+        /* Maximize / snap-to-max don't go through WM_EXITSIZEMOVE, so handle them
+         * here (resize the guest + re-clip). We deliberately do NOT act on
+         * SIZE_RESTORED, which also fires continuously during a live drag and
+         * would fight the border-drag if we re-clipped every step. */
+        if (wp == SIZE_MAXIMIZED) {
+            maybe_request_guest_resize(app);
+            apply_cursor_lock(app);
+        }
+        break;
 
     case WM_SETFOCUS:
         apply_cursor_lock(app);
