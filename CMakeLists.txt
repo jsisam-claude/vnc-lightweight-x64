@@ -83,6 +83,7 @@ set(VENDOR_SOURCES ${LIBVNCCLIENT_TUS} ${ZLIB_TUS})
 set(CORE_SOURCES
   ${CMAKE_SOURCE_DIR}/src/core/client.c
   ${CMAKE_SOURCE_DIR}/src/core/qemu_audio.c
+  ${CMAKE_SOURCE_DIR}/src/core/png_write.c
 )
 
 # IPC layer (portable): shared framebuffer + validated message channel. Linked

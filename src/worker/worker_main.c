@@ -269,6 +269,14 @@ static void dispatch_command(worker *w, uint32_t type, const void *buf, uint32_t
             mtx_unlock(&w->api_lock);
         }
         break;
+    case VNC_CMD_REQUEST_RESIZE:
+        if (len == sizeof(vnc_ipc_request_resize)) {
+            const vnc_ipc_request_resize *r = buf;
+            mtx_lock(&w->api_lock);
+            vnc_client_request_desktop_size(w->client, r->width, r->height);
+            mtx_unlock(&w->api_lock);
+        }
+        break;
     case VNC_CMD_AUDIO_ENABLE:
         if (len == sizeof(vnc_ipc_audio_cfg)) {
             const vnc_ipc_audio_cfg *a = buf;

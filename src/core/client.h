@@ -126,6 +126,13 @@ int vnc_client_handle_message(vnc_client *c);
 /* Request a framebuffer update (incremental or full). */
 bool vnc_client_request_update(vnc_client *c, bool incremental);
 
+/* Ask the server to resize the remote desktop to width x height (client-driven
+ * resize via the ExtendedDesktopSize pseudo-encoding, which QEMU supports). The
+ * server may decline or pick the nearest supported mode; a resulting resize
+ * arrives through on_desktop_resize like any other. No-op if the server has not
+ * advertised screen geometry yet. Must hold the same lock as other sends. */
+bool vnc_client_request_desktop_size(vnc_client *c, int width, int height);
+
 /* Input to the server. Safe no-ops in view-only mode. */
 bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down);
 /* Prefer the QEMU Extended Key Event (keysym + XT keycode) when the server

@@ -39,6 +39,7 @@ enum {
     VNC_CMD_AUDIO_ENABLE  = 0x0008, /* vnc_ipc_audio_cfg (M5) */
     VNC_CMD_AUDIO_DISABLE = 0x0009, /* empty (M5) */
     VNC_CMD_FT_OP         = 0x000A, /* file-transfer op (M8) */
+    VNC_CMD_REQUEST_RESIZE= 0x000B, /* vnc_ipc_request_resize (client-driven resize) */
     VNC_CMD_SHUTDOWN      = 0x00FF  /* empty */
 };
 
@@ -94,6 +95,8 @@ typedef struct { uint32_t keysym; uint32_t keycode; uint8_t down; } vnc_ipc_key_
 typedef struct { uint16_t x; uint16_t y; uint8_t button_mask; } vnc_ipc_pointer;
 
 typedef struct { uint8_t incremental; } vnc_ipc_update_req;
+
+typedef struct { uint16_t width, height; } vnc_ipc_request_resize;
 
 typedef struct { uint8_t led_state; } vnc_ipc_led;
 

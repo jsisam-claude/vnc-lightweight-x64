@@ -487,6 +487,18 @@ bool vnc_client_request_update(vnc_client *c, bool incremental)
                                         incremental ? TRUE : FALSE) == TRUE;
 }
 
+bool vnc_client_request_desktop_size(vnc_client *c, int width, int height)
+{
+    if (!c->rfb || width <= 0 || height <= 0 ||
+        width > VNC_MAX_FB_WIDTH || height > VNC_MAX_FB_HEIGHT)
+        return false;
+    /* SendExtDesktopSize is a no-op until the server has advertised its screen
+     * geometry (i.e. it supports ExtendedDesktopSize, which we advertise because
+     * canHandleNewFBSize is set). It also skips the send when the size already
+     * matches, so this is safe to call repeatedly (e.g. on every window resize). */
+    return SendExtDesktopSize(c->rfb, (uint16_t)width, (uint16_t)height) == TRUE;
+}
+
 bool vnc_client_send_key(vnc_client *c, uint32_t keysym, bool down)
 {
     if (!c->rfb || c->view_only)

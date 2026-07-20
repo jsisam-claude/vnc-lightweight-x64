@@ -18,6 +18,7 @@
 
 #include "app/modes.h"
 #include "core/client.h"
+#include "core/png_write.h"
 
 struct app {
     int fb_width, fb_height;
@@ -107,7 +108,8 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
         "usage: %s HOST[:PORT] [--encodings \"...\"] [--frames N]\n"
-        "          [--timeout-ms MS] [--ppm FILE] [--view-only]\n"
+        "          [--timeout-ms MS] [--ppm FILE] [--png FILE] [--resize WxH]\n"
+        "          [--ca FILE] [--view-only]\n"
         "  Password (if required) is read from $VNC_PASSWORD.\n",
         argv0);
 }
@@ -132,10 +134,12 @@ int vnc_headless_main(int argc, char **argv)
     const char *target = argv[1];
     const char *encodings = NULL;
     const char *ppm_path = NULL;
+    const char *png_path = NULL;
     const char *ca_file = NULL;
     long want_frames = 1;
     int timeout_ms = 5000;
     bool view_only = false;
+    int resize_w = 0, resize_h = 0;
 
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--encodings") && i + 1 < argc)
@@ -146,6 +150,15 @@ int vnc_headless_main(int argc, char **argv)
             timeout_ms = (int)strtol(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc)
             ppm_path = argv[++i];
+        else if (!strcmp(argv[i], "--png") && i + 1 < argc)
+            png_path = argv[++i];
+        else if (!strcmp(argv[i], "--resize") && i + 1 < argc) {
+            /* WxH: ask the server to resize (ExtendedDesktopSize). */
+            const char *s = argv[++i];
+            resize_w = (int)strtol(s, NULL, 10);
+            const char *x = strchr(s, 'x');
+            resize_h = x ? (int)strtol(x + 1, NULL, 10) : 0;
+        }
         else if (!strcmp(argv[i], "--ca") && i + 1 < argc)
             ca_file = argv[++i];
         else if (!strcmp(argv[i], "--view-only"))
@@ -215,6 +228,26 @@ int vnc_headless_main(int argc, char **argv)
         vnc_client_request_update(c, true);
     }
 
+    /* Client-driven resize: only meaningful AFTER a frame, when the server's
+     * screen geometry (ExtendedDesktopSize) has been received. Request it, then
+     * pump until the desktop actually changes size (or we time out). */
+    if (resize_w > 0 && resize_h > 0) {
+        fprintf(stderr, "[vnctest] requesting resize to %dx%d\n", resize_w, resize_h);
+        int e2 = 0;
+        while ((vnc_client_width(c) != resize_w || vnc_client_height(c) != resize_h) &&
+               e2 < timeout_ms) {
+            vnc_client_request_desktop_size(c, resize_w, resize_h);
+            int r = vnc_client_pump(c, (unsigned)step_ms * 1000u);
+            if (r < 0)
+                break;
+            if (r == 0)
+                e2 += step_ms;
+            vnc_client_request_update(c, true);
+        }
+        fprintf(stderr, "[vnctest] after resize: %dx%d\n",
+                vnc_client_width(c), vnc_client_height(c));
+    }
+
     const uint8_t *fb = vnc_client_framebuffer(c);
     int w = vnc_client_width(c), h = vnc_client_height(c);
     if (!fb || w <= 0 || h <= 0) {
@@ -229,6 +262,8 @@ int vnc_headless_main(int argc, char **argv)
 
     if (ppm_path && write_ppm(ppm_path, fb, w, h) != 0)
         fprintf(stderr, "[vnctest] failed to write PPM %s\n", ppm_path);
+    if (png_path && !png_write_bgrx(png_path, fb, w, h))
+        fprintf(stderr, "[vnctest] failed to write PNG %s\n", png_path);
 
     vnc_client_destroy(c);
     return 0;
