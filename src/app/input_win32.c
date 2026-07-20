@@ -107,6 +107,23 @@ void input_key(ViewerApp *app, WPARAM vk, LPARAM lparam, BOOL down)
     vnc_channel_send(&app->ch, VNC_CMD_KEY_EXT, &k, sizeof(k));
 }
 
+void input_combo(ViewerApp *app, const uint32_t *keysyms, int n)
+{
+    if (app->view_only || !keysyms || n <= 0)
+        return;
+    /* Plain KeyEvents (keysym only) — no scancode is available for a synthetic
+     * chord, and Ctrl/Alt/Del etc. are layout-independent keysyms. Press in
+     * order, release in reverse so the modifiers bracket the action key. */
+    for (int i = 0; i < n; i++) {
+        vnc_ipc_key k = { keysyms[i], 1 };
+        vnc_channel_send(&app->ch, VNC_CMD_KEY, &k, sizeof(k));
+    }
+    for (int i = n - 1; i >= 0; i--) {
+        vnc_ipc_key k = { keysyms[i], 0 };
+        vnc_channel_send(&app->ch, VNC_CMD_KEY, &k, sizeof(k));
+    }
+}
+
 void input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam)
 {
     if (app->view_only)

@@ -54,6 +54,9 @@ typedef struct {
     int         scale_mode;            /* 0=fit (aspect), 1=stretch, 2=1:1 */
     BOOL        fullscreen;
     BOOL        want_fullscreen;       /* requested at startup */
+    BOOL        auto_resize;           /* resize the guest desktop to the window */
+    BOOL        cursor_locked;         /* confine the pointer to the client area */
+    uint8_t     led_state;             /* last QEMU LED state (for the title bar) */
     LONG        windowed_style;        /* saved to restore from fullscreen */
     RECT        windowed_rect;
     HINSTANCE   hinst;
@@ -76,6 +79,9 @@ void  viewer_drain_messages(HWND hwnd);        /* drop stale WM_APP_* on teardow
 /* input_win32.c — translate + forward input to the worker. */
 void  input_key(ViewerApp *app, WPARAM vk, LPARAM lparam, BOOL down);
 void  input_pointer(ViewerApp *app, int x, int y, UINT msg, WPARAM wparam);
+/* Send a synthetic key chord (e.g. Ctrl+Alt+Del): press each X11 keysym in
+ * order, then release in reverse. No-op in view-only mode. */
+void  input_combo(ViewerApp *app, const uint32_t *keysyms, int n);
 
 /* clipboard_win32.c — both directions. */
 void  clipboard_from_server(ViewerApp *app, const char *text, unsigned len);

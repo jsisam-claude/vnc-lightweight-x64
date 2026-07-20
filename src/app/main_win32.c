@@ -325,6 +325,64 @@ static int run_utf8_mode(int (*entry)(int, char **), wchar_t **wargv, int argc)
     return rc;
 }
 
+/* ---- recent-connection list (saved profiles) ------------------------------ */
+/* Stored under HKCU so it's per-user and needs no filesystem path; the UI is the
+ * trusted process, and the sandboxed worker never touches the registry. */
+#define VNC_REG_KEY    L"Software\\vnc-lightweight-x64"
+#define VNC_RECENT_MAX 10
+
+static void recents_load(HWND combo)
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, VNC_REG_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return;
+    for (int i = 0; i < VNC_RECENT_MAX; i++) {
+        wchar_t name[16];
+        _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
+        wchar_t val[300];
+        DWORD cb = sizeof(val), type = 0;
+        if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
+            type == REG_SZ) {
+            val[299] = 0; /* RegQueryValueExW does not guarantee NUL-termination */
+            SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)val);
+        }
+    }
+    RegCloseKey(k);
+}
+
+static void recents_save(const wchar_t *host, int port)
+{
+    wchar_t entry[300];
+    _snwprintf_s(entry, 300, _TRUNCATE, L"%s:%d", host, port);
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, VNC_REG_KEY, 0, NULL, 0,
+                        KEY_READ | KEY_WRITE, NULL, &k, NULL) != ERROR_SUCCESS)
+        return;
+    /* New list: this entry first, then existing entries minus duplicates, capped. */
+    wchar_t list[VNC_RECENT_MAX][300];
+    int n = 0;
+    wcsncpy_s(list[n++], 300, entry, _TRUNCATE);
+    for (int i = 0; i < VNC_RECENT_MAX && n < VNC_RECENT_MAX; i++) {
+        wchar_t name[16];
+        _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
+        wchar_t val[300];
+        DWORD cb = sizeof(val), type = 0;
+        if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
+            type == REG_SZ) {
+            val[299] = 0;
+            if (_wcsicmp(val, entry) != 0)
+                wcsncpy_s(list[n++], 300, val, _TRUNCATE);
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        wchar_t name[16];
+        _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
+        RegSetValueExW(k, name, 0, REG_SZ, (const BYTE *)list[i],
+                       (DWORD)((wcslen(list[i]) + 1) * sizeof(wchar_t)));
+    }
+    RegCloseKey(k);
+}
+
 /* ---- connection dialog (shown when launched with no target) --------------- */
 
 static ViewerApp *g_conn_app;
@@ -374,6 +432,7 @@ static LRESULT CALLBACK conn_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!caw[0] || WideCharToMultiByte(CP_UTF8, 0, caw, -1, a->ca_file,
                                                (int)sizeof(a->ca_file), NULL, NULL) <= 0)
                 a->ca_file[0] = 0;
+            recents_save(a->host, a->port); /* remember this target for next time */
             g_conn_ok = TRUE;
             DestroyWindow(hwnd);
             return 0;
@@ -418,9 +477,13 @@ static BOOL prompt_connection(ViewerApp *app, HINSTANCE hinst)
         x, y, w, h, dlg, (HMENU)(id), hinst, NULL)
 
     CONN_MK(L"STATIC", L"Host:", 0, 14, 16, 56, 18, 0);
-    HWND host_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        74, 14, 274, 24, dlg, (HMENU)201, hinst, NULL);
+    /* Editable combo: type a host, or pick a recent one. Height includes the
+     * drop-down list. GetWindowTextW returns the edit-field text either way. */
+    HWND host_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+        CBS_DROPDOWN | CBS_AUTOHSCROLL,
+        74, 14, 274, 220, dlg, (HMENU)201, hinst, NULL);
+    recents_load(host_edit);
     CONN_MK(L"STATIC", L"Port:", 0, 14, 50, 56, 18, 0);
     CONN_MK(L"EDIT", L"5900", WS_TABSTOP | ES_NUMBER | WS_BORDER, 74, 48, 80, 24, 202);
     CONN_MK(L"BUTTON", L"View only (no input sent)",

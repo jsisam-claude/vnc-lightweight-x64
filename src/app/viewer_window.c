@@ -11,7 +11,22 @@
 #include "app/audio_waveout.h"
 #include "app/diag.h"
 #include "core/ftpath.h"
+#include "core/png_write.h"
 #include "ipc/protocol.h"
+
+#include <commdlg.h> /* GetSaveFileNameW for screenshots (delay-loaded) */
+
+/* Custom items appended to the window System menu (Alt+Space). WM_SYSCOMMAND
+ * wParam values must be < 0xF000 with the low 4 bits clear (reserved by the OS). */
+#define IDM_CAD        0x0010 /* send Ctrl+Alt+Del */
+#define IDM_CAF1       0x0020 /* send Ctrl+Alt+F1 */
+#define IDM_CAF2       0x0030 /* send Ctrl+Alt+F2 */
+#define IDM_CESC       0x0040 /* send Ctrl+Esc */
+#define IDM_FULLSCREEN 0x0050
+#define IDM_AUTORESIZE 0x0060 /* checkable: resize guest to window */
+#define IDM_LOCKCURSOR 0x0070 /* checkable: confine pointer to client area */
+#define IDM_SCREENSHOT 0x0080
+#define IDM_DISCONNECT 0x0090
 
 #include <windowsx.h> /* GET_X_LPARAM / GET_Y_LPARAM */
 #include <shellapi.h> /* DragAcceptFiles / DragQueryFile */
@@ -46,6 +61,8 @@ static RECT compute_dest_rect(ViewerApp *app, int cw, int ch)
     return d;
 }
 
+static void apply_cursor_lock(ViewerApp *app); /* defined below */
+
 static void toggle_fullscreen(ViewerApp *app)
 {
     HWND hwnd = app->hwnd;
@@ -68,6 +85,7 @@ static void toggle_fullscreen(ViewerApp *app)
                      SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
         app->fullscreen = FALSE;
     }
+    apply_cursor_lock(app); /* the client rect moved; re-clip if locked */
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -84,6 +102,96 @@ static void setup_dib(ViewerApp *app, int w, int h)
     app->fb_height = h;
 }
 
+/* Title bar as a status line: target, resolution, state, LEDs, view-only. */
+static void update_title(ViewerApp *app)
+{
+    unsigned s = app->led_state;
+    wchar_t leds[24] = L"";
+    if (s & 7)
+        _snwprintf_s(leds, 24, _TRUNCATE, L" [%s%s%s]",
+                     (s & 4) ? L"Caps " : L"", (s & 2) ? L"Num " : L"",
+                     (s & 1) ? L"Scroll" : L"");
+    wchar_t title[320];
+    _snwprintf_s(title, 320, _TRUNCATE, L"%s:%d \x2014 %dx%d \x2014 %s%s%s",
+                 app->host[0] ? app->host : L"VNC", app->port,
+                 app->fb_width, app->fb_height,
+                 app->connected ? L"connected" : L"connecting",
+                 app->view_only ? L" (view-only)" : L"", leds);
+    SetWindowTextW(app->hwnd, title);
+}
+
+/* Confine the pointer to the client area when locked and focused; release
+ * otherwise. Safe to call on focus, resize, and fullscreen transitions. */
+static void apply_cursor_lock(ViewerApp *app)
+{
+    if (app->cursor_locked && GetForegroundWindow() == app->hwnd) {
+        RECT rc; GetClientRect(app->hwnd, &rc);
+        POINT tl = { rc.left, rc.top }, br = { rc.right, rc.bottom };
+        ClientToScreen(app->hwnd, &tl);
+        ClientToScreen(app->hwnd, &br);
+        RECT clip = { tl.x, tl.y, br.x, br.y };
+        ClipCursor(&clip);
+    } else {
+        ClipCursor(NULL);
+    }
+}
+
+/* Save the current framebuffer to a PNG the user picks. Reads the shared pixels
+ * directly (same source the blit uses); a concurrent worker write can at worst
+ * produce a one-frame tear, never an out-of-bounds read (fb dims are validated). */
+static void do_screenshot(ViewerApp *app)
+{
+    if (!app->shm || app->fb_width <= 0 || app->fb_height <= 0)
+        return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    wchar_t file[MAX_PATH];
+    _snwprintf_s(file, MAX_PATH, _TRUNCATE,
+                 L"vnc-%04u%02u%02u-%02u%02u%02u.png",
+                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    OPENFILENAMEW ofn = {0};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = app->hwnd;
+    ofn.lpstrFilter = L"PNG image (*.png)\0*.png\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn))
+        return;
+    char path[MAX_PATH * 3 + 1];
+    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, path, sizeof(path), NULL, NULL) <= 0)
+        return;
+    bool ok = png_write_bgrx(path, vnc_shm_pixels(app->shm),
+                             app->fb_width, app->fb_height);
+    diag_logf(ok ? DIAG_INFO : DIAG_ERROR, "screenshot %s (%dx%d)",
+              ok ? "saved" : "FAILED", app->fb_width, app->fb_height);
+    if (!ok)
+        MessageBoxW(app->hwnd, L"Failed to save the screenshot.",
+                    L"VNC Lightweight", MB_OK | MB_ICONERROR);
+}
+
+/* Append our action items to the window's System menu (reachable via Alt+Space
+ * or the title-bar icon) — no menu bar, so the guest view keeps the full client
+ * area. */
+static void setup_system_menu(HWND hwnd)
+{
+    HMENU m = GetSystemMenu(hwnd, FALSE);
+    if (!m)
+        return;
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_CAD,        L"Send Ctrl+Alt+Del");
+    AppendMenuW(m, MF_STRING, IDM_CAF1,       L"Send Ctrl+Alt+F1");
+    AppendMenuW(m, MF_STRING, IDM_CAF2,       L"Send Ctrl+Alt+F2");
+    AppendMenuW(m, MF_STRING, IDM_CESC,       L"Send Ctrl+Esc");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_FULLSCREEN, L"Fullscreen\tF11");
+    AppendMenuW(m, MF_STRING, IDM_AUTORESIZE, L"Resize guest to window");
+    AppendMenuW(m, MF_STRING, IDM_LOCKCURSOR, L"Lock cursor to window");
+    AppendMenuW(m, MF_STRING, IDM_SCREENSHOT, L"Save screenshot\x2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_DISCONNECT, L"Disconnect");
+}
+
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     ViewerApp *app = (ViewerApp *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -94,8 +202,72 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         AddClipboardFormatListener(hwnd); /* local clipboard -> server */
         DragAcceptFiles(hwnd, TRUE);      /* file drag-drop upload */
+        setup_system_menu(hwnd);          /* send-keys / fullscreen / screenshot */
         return 0;
     }
+
+    case WM_SYSCOMMAND:
+        /* Custom System-menu actions. (wParam low 4 bits are OS-reserved, so we
+         * defined the IDs on 16-byte boundaries; still mask before comparing.) */
+        switch (wp & 0xFFF0) {
+        case IDM_CAD: {
+            static const uint32_t k[] = { 0xFFE3, 0xFFE9, 0xFFFF }; /* Ctrl Alt Del */
+            input_combo(app, k, 3); return 0;
+        }
+        case IDM_CAF1: {
+            static const uint32_t k[] = { 0xFFE3, 0xFFE9, 0xFFBE }; /* Ctrl Alt F1 */
+            input_combo(app, k, 3); return 0;
+        }
+        case IDM_CAF2: {
+            static const uint32_t k[] = { 0xFFE3, 0xFFE9, 0xFFBF }; /* Ctrl Alt F2 */
+            input_combo(app, k, 3); return 0;
+        }
+        case IDM_CESC: {
+            static const uint32_t k[] = { 0xFFE3, 0xFF1B }; /* Ctrl Esc */
+            input_combo(app, k, 2); return 0;
+        }
+        case IDM_FULLSCREEN:
+            toggle_fullscreen(app); return 0;
+        case IDM_AUTORESIZE:
+            app->auto_resize = !app->auto_resize;
+            CheckMenuItem(GetSystemMenu(hwnd, FALSE), IDM_AUTORESIZE,
+                          MF_BYCOMMAND | (app->auto_resize ? MF_CHECKED : MF_UNCHECKED));
+            return 0;
+        case IDM_LOCKCURSOR:
+            app->cursor_locked = !app->cursor_locked;
+            CheckMenuItem(GetSystemMenu(hwnd, FALSE), IDM_LOCKCURSOR,
+                          MF_BYCOMMAND | (app->cursor_locked ? MF_CHECKED : MF_UNCHECKED));
+            apply_cursor_lock(app);
+            return 0;
+        case IDM_SCREENSHOT:
+            do_screenshot(app); return 0;
+        case IDM_DISCONNECT:
+            DestroyWindow(hwnd); return 0;
+        default:
+            break;
+        }
+        break; /* fall through to DefWindowProc for real system commands */
+
+    case WM_EXITSIZEMOVE:
+        /* User finished resizing the window: optionally push the new size to the
+         * guest (debounced — we don't send during the drag). Re-clip if locked. */
+        if (app->auto_resize && app->connected && !app->fullscreen && app->ch.wr) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            int w = rc.right - rc.left, h = rc.bottom - rc.top;
+            if (w > 0 && h > 0 && w <= 16384 && h <= 16384) {
+                vnc_ipc_request_resize r = { (uint16_t)w, (uint16_t)h };
+                vnc_channel_send(&app->ch, VNC_CMD_REQUEST_RESIZE, &r, sizeof(r));
+            }
+        }
+        apply_cursor_lock(app);
+        return 0;
+
+    case WM_SETFOCUS:
+        apply_cursor_lock(app);
+        break;
+    case WM_KILLFOCUS:
+        ClipCursor(NULL); /* never hold the pointer captive when unfocused */
+        break;
 
     case WM_DROPFILES: {
         HDROP drop = (HDROP)wp;
@@ -160,6 +332,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_RESIZE:
         diag_logf(DIAG_INFO, "framebuffer resize -> %dx%d", (int)wp, (int)lp);
         setup_dib(app, (int)wp, (int)lp);
+        update_title(app);
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
 
@@ -205,17 +378,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         app_request_password(app);
         return 0;
 
-    case WM_APP_LED: {
+    case WM_APP_LED:
         /* QEMU LED state: bit0=Scroll, bit1=Num, bit2=Caps. Reflect it in the
          * title (non-intrusively; we don't force the local keyboard LEDs). */
-        unsigned s = (unsigned)wp;
-        wchar_t title[128];
-        _snwprintf_s(title, 128, _TRUNCATE, L"VNC Lightweight  [%s%s%s]",
-                     (s & 4) ? L"CAPS " : L"", (s & 2) ? L"NUM " : L"",
-                     (s & 1) ? L"SCROLL" : L"");
-        SetWindowTextW(hwnd, title);
+        app->led_state = (uint8_t)wp;
+        update_title(app);
         return 0;
-    }
 
     case WM_APP_STATUS:
         diag_logf(DIAG_INFO, "status: %s",
@@ -225,6 +393,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                   "disconnected");
         if ((int)wp == VNC_STATUS_CONNECTED) {
             app->connected = TRUE;
+            update_title(app);
         } else if ((int)wp == VNC_STATUS_DISCONNECTED ||
                    (int)wp == VNC_STATUS_CONNECT_FAILED ||
                    (int)wp == VNC_STATUS_AUTH_FAILED) {
@@ -325,6 +494,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        ClipCursor(NULL); /* release any cursor confinement */
         RemoveClipboardFormatListener(hwnd);
         if (app->remote_cursor) DestroyCursor(app->remote_cursor);
         PostQuitMessage(0);
