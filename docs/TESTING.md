@@ -58,7 +58,11 @@ output on stderr. VNC Authentication (DES) is exercised by the password login;
 a wrong `VNC_PASSWORD` must fail closed with "Authentication failure".
 
 `vnctest` reads the password only from `$VNC_PASSWORD` (never argv). `--ppm FILE`
-dumps a snapshot for eyeballing.
+and `--png FILE` dump a snapshot for eyeballing (both expect the framebuffer in
+B,G,R,X order — see `client.c`, which requests that format). `--resize WxH`
+exercises the client-driven ExtendedDesktopSize request (the client sends
+`SetDesktopSize`; whether the desktop actually changes depends on the server
+having a resizable display).
 
 ### QEMU audio parser (unit + fuzz + live)
 

@@ -32,6 +32,11 @@ the vendored protocol core builds and is proven against real servers.
       server. See "File transfer" below.
 - **CI** — GitHub Actions: Linux ASan encoding matrix + TLS verification + audio
       fuzz, and a Windows MSVC compile of the full Win32/SChannel/sandbox code.
+- **UX** — client-driven guest resize (ExtendedDesktopSize; "Resize guest to
+      window"), PNG screenshot (Save…), a System-menu action set (Alt+Space:
+      Send Ctrl+Alt+Del / Ctrl+Alt+F1·F2 / Ctrl+Esc, fullscreen, cursor lock,
+      disconnect), a title-bar status line, and saved connection recents. All
+      Windows-UI; pending Windows-host validation.
 
 ### Deliberately out of scope (for now)
 

@@ -94,11 +94,12 @@ static int write_ppm(const char *path, const uint8_t *fb, int w, int h)
     if (!f)
         return -1;
     fprintf(f, "P6\n%d %d\n255\n", w, h);
-    /* Framebuffer is 32bpp; rfbGetClient(8,3,4) yields RGBX byte order on LE. */
+    /* Framebuffer is 32bpp B,G,R,X (we request blueShift=0; see client.c), so
+     * emit R,G,B = bytes 2,1,0. PPM P6 wants R,G,B in that order. */
     for (int i = 0; i < w * h; i++) {
-        fputc(fb[i * 4 + 0], f);
-        fputc(fb[i * 4 + 1], f);
         fputc(fb[i * 4 + 2], f);
+        fputc(fb[i * 4 + 1], f);
+        fputc(fb[i * 4 + 0], f);
     }
     fclose(f);
     return 0;

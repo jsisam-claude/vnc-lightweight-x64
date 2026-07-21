@@ -143,6 +143,17 @@ static void do_screenshot(ViewerApp *app)
 {
     if (!app->shm || app->fb_width <= 0 || app->fb_height <= 0)
         return;
+    /* Snapshot the pixels AND dimensions BEFORE opening the Save dialog: that
+     * dialog runs a modal message pump, during which a resize can be dispatched
+     * (WM_APP_RESIZE) and change fb_width/height + the shm stride. Encoding from a
+     * private copy taken now avoids a wrong-stride / torn screenshot. */
+    int w = app->fb_width, h = app->fb_height;
+    size_t nbytes = (size_t)w * (size_t)h * 4u;
+    uint8_t *snap = (uint8_t *)malloc(nbytes);
+    if (!snap)
+        return;
+    memcpy(snap, vnc_shm_pixels(app->shm), nbytes);
+
     SYSTEMTIME st; GetLocalTime(&st);
     wchar_t file[MAX_PATH];
     _snwprintf_s(file, MAX_PATH, _TRUNCATE,
@@ -156,14 +167,16 @@ static void do_screenshot(ViewerApp *app)
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrDefExt = L"png";
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-    if (!GetSaveFileNameW(&ofn))
+    if (!GetSaveFileNameW(&ofn)) {
+        free(snap);
         return;
+    }
     /* Use the wide path directly: the CRT's char* fopen would mis-encode a
      * non-ASCII path (accented / CJK user folder) under the ANSI code page. */
-    bool ok = png_write_bgrx_w(file, vnc_shm_pixels(app->shm),
-                               app->fb_width, app->fb_height);
+    bool ok = png_write_bgrx_w(file, snap, w, h);
+    free(snap);
     diag_logf(ok ? DIAG_INFO : DIAG_ERROR, "screenshot %s (%dx%d)",
-              ok ? "saved" : "FAILED", app->fb_width, app->fb_height);
+              ok ? "saved" : "FAILED", w, h);
     if (!ok)
         MessageBoxW(app->hwnd, L"Failed to save the screenshot.",
                     L"VNC Lightweight", MB_OK | MB_ICONERROR);
@@ -177,7 +190,13 @@ static void do_screenshot(ViewerApp *app)
  * that case (the view just letterboxes). */
 static void maybe_request_guest_resize(ViewerApp *app)
 {
-    if (!app->auto_resize || !app->connected || app->fullscreen || !app->ch.wr)
+    /* view_only also gated in the worker/core, but stop it here too (matching
+     * input_win32.c) so a view-only session never even emits the request. Note:
+     * the request only bounds the size WE ask for; a server that adopts a larger
+     * nearest mode can still exceed the shared framebuffer and fail closed — an
+     * accepted residual, since the client can't know the adopted size in advance. */
+    if (!app->auto_resize || !app->connected || app->fullscreen ||
+        app->view_only || !app->ch.wr)
         return;
     RECT rc; GetClientRect(app->hwnd, &rc);
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
@@ -267,19 +286,26 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break; /* fall through to DefWindowProc for real system commands */
 
+    case WM_ENTERSIZEMOVE:
+        app->in_sizemove = TRUE; /* interactive border/title drag begins */
+        return 0;
+
     case WM_EXITSIZEMOVE:
         /* User finished dragging the border: push the new size to the guest
          * (debounced — nothing sent during the drag) and re-clip if locked. */
+        app->in_sizemove = FALSE;
         maybe_request_guest_resize(app);
         apply_cursor_lock(app);
         return 0;
 
     case WM_SIZE:
-        /* Maximize / snap-to-max don't go through WM_EXITSIZEMOVE, so handle them
-         * here (resize the guest + re-clip). We deliberately do NOT act on
-         * SIZE_RESTORED, which also fires continuously during a live drag and
-         * would fight the border-drag if we re-clipped every step. */
-        if (wp == SIZE_MAXIMIZED) {
+        /* Maximize, Aero-snap (Win+Arrow), and restore-from-maximize do NOT go
+         * through the modal WM_ENTER/EXITSIZEMOVE pair, so push the new size to
+         * the guest and re-clip the cursor here. We skip this while in_sizemove
+         * (a live border drag fires WM_SIZE continuously — WM_EXITSIZEMOVE handles
+         * that final size), so we never fight the drag. Covers SIZE_RESTORED too,
+         * which snap/restore produce. */
+        if (!app->in_sizemove && (wp == SIZE_RESTORED || wp == SIZE_MAXIMIZED)) {
             maybe_request_guest_resize(app);
             apply_cursor_lock(app);
         }

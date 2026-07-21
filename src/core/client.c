@@ -331,6 +331,16 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
         return NULL;
     }
 
+    /* Request B,G,R,X byte order (blue in the low bits) instead of the library's
+     * little-endian default of R,G,B,X. This is what a Win32 BI_RGB 32bpp DIB
+     * expects, so StretchDIBits blits with no per-pixel swap, and it matches
+     * png_write_bgrx() — the whole pixel pipeline (shm, DIB, PNG) then agrees on
+     * one byte order. rfbInitClient sends this to the server via SetPixelFormat,
+     * and the server is required to deliver pixels in the requested format. */
+    c->rfb->format.redShift = 16;
+    c->rfb->format.greenShift = 8;
+    c->rfb->format.blueShift = 0;
+
     /* Default to the decoders actually compiled in (Tight needs libjpeg, added
      * later). Callers may override via vnc_client_set_encodings. */
     c->encodings = strdup("copyrect zrle hextile zlib corre rre trle ultra raw");
@@ -489,7 +499,10 @@ bool vnc_client_request_update(vnc_client *c, bool incremental)
 
 bool vnc_client_request_desktop_size(vnc_client *c, int width, int height)
 {
-    if (!c->rfb || width <= 0 || height <= 0 ||
+    /* A desktop resize mutates the remote server, so honor view-only exactly like
+     * the key/pointer/cut-text senders do — a "view only (no input sent)" session
+     * must not change the server's geometry. */
+    if (!c->rfb || c->view_only || width <= 0 || height <= 0 ||
         width > VNC_MAX_FB_WIDTH || height > VNC_MAX_FB_HEIGHT)
         return false;
     /* SendExtDesktopSize is a no-op until the server has advertised its screen

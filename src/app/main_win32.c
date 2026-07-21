@@ -200,6 +200,10 @@ BOOL app_start_session(ViewerApp *app)
 
 void app_stop_session(ViewerApp *app)
 {
+    /* Release any cursor confinement up front: sandbox_cleanup below can block up
+     * to ~2s waiting for the worker, and we must not leave the pointer trapped in
+     * the (now frozen) window during that wait. Harmless if not clipped. */
+    ClipCursor(NULL);
     if (app->ch.wr)
         vnc_channel_send(&app->ch, VNC_CMD_SHUTDOWN, NULL, 0);
     sandbox_cleanup(app); /* closes channel, waits for / terminates worker */

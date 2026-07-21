@@ -59,6 +59,7 @@ typedef struct {
     uint8_t     led_state;             /* last QEMU LED state (for the title bar) */
     LONG        windowed_style;        /* saved to restore from fullscreen */
     RECT        windowed_rect;
+    BOOL        in_sizemove;           /* inside an interactive border-drag loop */
     HINSTANCE   hinst;
 
     /* Connection parameters */
