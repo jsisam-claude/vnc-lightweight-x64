@@ -69,7 +69,7 @@ void clipboard_to_server(ViewerApp *app)
         const wchar_t *w = (const wchar_t *)GlobalLock(h);
         if (w) {
             int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-            if (need > 1 && need <= (1 << 20)) {
+            if (need > 1 && need <= (int)VNC_IPC_MAX_PAYLOAD) {
                 char *utf8 = malloc((size_t)need);
                 if (utf8) {
                     WideCharToMultiByte(CP_UTF8, 0, w, -1, utf8, need, NULL, NULL);

@@ -29,7 +29,6 @@
 
 /* ---- UI -> Worker (commands) ---------------------------------------------- */
 enum {
-    VNC_CMD_CONFIG        = 0x0001, /* vnc_ipc_config */
     VNC_CMD_KEY           = 0x0002, /* vnc_ipc_key */
     VNC_CMD_KEY_EXT       = 0x0003, /* vnc_ipc_key_ext  (M4, QEMU ext key) */
     VNC_CMD_POINTER       = 0x0004, /* vnc_ipc_pointer */
@@ -38,7 +37,6 @@ enum {
     VNC_CMD_PASSWORD      = 0x0007, /* u32 len + bytes (reply to PW request) */
     VNC_CMD_AUDIO_ENABLE  = 0x0008, /* vnc_ipc_audio_cfg (M5) */
     VNC_CMD_AUDIO_DISABLE = 0x0009, /* empty (M5) */
-    VNC_CMD_FT_OP         = 0x000A, /* file-transfer op (M8) */
     VNC_CMD_REQUEST_RESIZE= 0x000B, /* vnc_ipc_request_resize (client-driven resize) */
     VNC_CMD_SHUTDOWN      = 0x00FF  /* empty */
 };
@@ -56,8 +54,7 @@ enum {
     VNC_EVT_AUDIO_DATA    = 0x8008, /* u32 len + PCM bytes (M5) */
     VNC_EVT_AUDIO_END     = 0x8009, /* empty (M5) */
     VNC_EVT_PASSWORD_REQ  = 0x800A, /* empty — worker needs a password now */
-    VNC_EVT_LOG           = 0x800B, /* u8 level + message bytes */
-    VNC_EVT_FT_DATA       = 0x800C  /* file-transfer data (M8) */
+    VNC_EVT_LOG           = 0x800B  /* u8 level + message bytes */
 };
 
 /* Status codes for VNC_EVT_STATUS. */
@@ -83,11 +80,6 @@ typedef struct { uint32_t width; uint32_t height; } vnc_ipc_resize;
 
 typedef struct { uint16_t x, y, w, h; } vnc_ipc_rect;
 
-typedef struct {
-    uint8_t  view_only;
-    /* encodings string follows as the remainder of the payload (not NUL-term). */
-} vnc_ipc_config;
-
 typedef struct { uint32_t keysym; uint8_t down; } vnc_ipc_key;
 
 typedef struct { uint32_t keysym; uint32_t keycode; uint8_t down; } vnc_ipc_key_ext;
@@ -97,6 +89,10 @@ typedef struct { uint16_t x; uint16_t y; uint8_t button_mask; } vnc_ipc_pointer;
 typedef struct { uint8_t incremental; } vnc_ipc_update_req;
 
 typedef struct { uint16_t width, height; } vnc_ipc_request_resize;
+
+/* NB: file-transfer + config message types are intentionally absent — file
+ * transfer (M8) is deferred, and configuration travels via the worker's argv,
+ * not the channel. The receiver hard-rejects any type not listed above. */
 
 typedef struct { uint8_t led_state; } vnc_ipc_led;
 

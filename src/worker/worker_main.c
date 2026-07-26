@@ -124,7 +124,7 @@ static void w_on_cursor(void *user, int xhot, int yhot, int width, int height,
 {
     worker *w = user;
     size_t npix = (size_t)width * (size_t)height;
-    if (npix == 0 || npix > 256u * 256u)
+    if (npix == 0 || npix > (size_t)VNC_MAX_CURSOR_DIM * VNC_MAX_CURSOR_DIM)
         return;
 
     /* Fold the 1-byte mask into the alpha channel so the UI can build a single
@@ -154,10 +154,6 @@ static void w_on_led(void *user, uint8_t state)
  * process-wide, so a hostile server can send BEGIN/DATA even though we never sent
  * ENABLE. Drop it unless the user asked for audio, so unsolicited audio never
  * reaches the UI at all (the UI also gates playback on its own opt-in). */
-static void w_on_audio_begin(void *user)
-{
-    (void)user; /* format was already announced at enable; begin needs no action */
-}
 static void w_on_audio_data(void *user, const uint8_t *pcm, size_t len)
 {
     worker *w = user;
@@ -231,50 +227,48 @@ static char *w_get_password(void *user)
 
 static void dispatch_command(worker *w, uint32_t type, const void *buf, uint32_t len)
 {
+    /* SHUTDOWN only flips a flag and never touches the RFB session. */
+    if (type == VNC_CMD_SHUTDOWN) {
+        w->running = 0;
+        return;
+    }
+
+    /* Every other command drives the core, whose session state must not be
+     * touched concurrently with the pump thread's TLS reads. Hold api_lock for
+     * the whole dispatch — the individual calls are all quick and non-blocking. */
+    mtx_lock(&w->api_lock);
     switch (type) {
     case VNC_CMD_KEY:
         if (len == sizeof(vnc_ipc_key)) {
             const vnc_ipc_key *k = buf;
-            mtx_lock(&w->api_lock);
             vnc_client_send_key(w->client, k->keysym, k->down != 0);
-            mtx_unlock(&w->api_lock);
         }
         break;
     case VNC_CMD_KEY_EXT:
         if (len == sizeof(vnc_ipc_key_ext)) {
             const vnc_ipc_key_ext *k = buf;
-            mtx_lock(&w->api_lock);
             vnc_client_send_key_ext(w->client, k->keysym, k->keycode, k->down != 0);
-            mtx_unlock(&w->api_lock);
         }
         break;
     case VNC_CMD_POINTER:
         if (len == sizeof(vnc_ipc_pointer)) {
             const vnc_ipc_pointer *p = buf;
-            mtx_lock(&w->api_lock);
             vnc_client_send_pointer(w->client, p->x, p->y, p->button_mask);
-            mtx_unlock(&w->api_lock);
         }
         break;
     case VNC_CMD_CUT_TEXT:
-        mtx_lock(&w->api_lock);
         vnc_client_send_cut_text(w->client, buf, len);
-        mtx_unlock(&w->api_lock);
         break;
     case VNC_CMD_REQUEST_UPDATE:
         if (len == sizeof(vnc_ipc_update_req)) {
             const vnc_ipc_update_req *u = buf;
-            mtx_lock(&w->api_lock);
             vnc_client_request_update(w->client, u->incremental != 0);
-            mtx_unlock(&w->api_lock);
         }
         break;
     case VNC_CMD_REQUEST_RESIZE:
         if (len == sizeof(vnc_ipc_request_resize)) {
             const vnc_ipc_request_resize *r = buf;
-            mtx_lock(&w->api_lock);
             vnc_client_request_desktop_size(w->client, r->width, r->height);
-            mtx_unlock(&w->api_lock);
         }
         break;
     case VNC_CMD_AUDIO_ENABLE:
@@ -283,25 +277,19 @@ static void dispatch_command(worker *w, uint32_t type, const void *buf, uint32_t
             /* Re-validate format bounds from the (trusted-but-checked) UI. */
             if (a->channels >= 1 && a->channels <= QA_MAX_CHANNELS &&
                 a->frequency >= QA_MIN_FREQ && a->frequency <= QA_MAX_FREQ) {
-                mtx_lock(&w->api_lock);
                 vnc_client_audio_enable(w->client, a->sample_format,
                                         a->channels, a->frequency);
-                mtx_unlock(&w->api_lock);
             }
         }
         break;
     case VNC_CMD_AUDIO_DISABLE:
-        mtx_lock(&w->api_lock);
         vnc_client_audio_disable(w->client);
-        mtx_unlock(&w->api_lock);
-        break;
-    case VNC_CMD_SHUTDOWN:
-        w->running = 0;
         break;
     default:
         /* Unknown/again-invalid command from a compromised UI: ignore. */
         break;
     }
+    mtx_unlock(&w->api_lock);
 }
 
 #ifdef _WIN32
@@ -344,7 +332,6 @@ static int worker_run(worker *w, const char *host, int port,
         .on_cut_text = w_on_cut_text,
         .on_cursor = w_on_cursor,
         .on_led = w_on_led,
-        .on_audio_begin = w_on_audio_begin,
         .on_audio_data = w_on_audio_data,
         .on_audio_end = w_on_audio_end,
         .on_log = w_on_log,

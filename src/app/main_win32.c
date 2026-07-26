@@ -335,21 +335,31 @@ static int run_utf8_mode(int (*entry)(int, char **), wchar_t **wargv, int argc)
 #define VNC_REG_KEY    L"Software\\vnc-lightweight-x64"
 #define VNC_RECENT_MAX 10
 
+/* Read the Recent<i> registry value into val (300 wchars) as a guaranteed-
+ * NUL-terminated string. Returns FALSE when the value is absent or not a REG_SZ.
+ * val is zero-filled first so a non-NUL-terminated REG_SZ cannot leak its tail. */
+static BOOL recents_read(HKEY k, int i, wchar_t *val)
+{
+    wchar_t name[16];
+    _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
+    ZeroMemory(val, 300 * sizeof(wchar_t));
+    DWORD cb = 300 * sizeof(wchar_t), type = 0;
+    if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) != ERROR_SUCCESS ||
+        type != REG_SZ)
+        return FALSE;
+    val[299] = 0; /* RegQueryValueExW does not guarantee NUL-termination */
+    return TRUE;
+}
+
 static void recents_load(HWND combo)
 {
     HKEY k;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, VNC_REG_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
         return;
     for (int i = 0; i < VNC_RECENT_MAX; i++) {
-        wchar_t name[16];
-        _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
-        wchar_t val[300] = {0}; /* zero-init: a non-NUL-terminated REG_SZ won't leak tail */
-        DWORD cb = sizeof(val), type = 0;
-        if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
-            type == REG_SZ) {
-            val[299] = 0; /* RegQueryValueExW does not guarantee NUL-termination */
+        wchar_t val[300];
+        if (recents_read(k, i, val))
             SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)val);
-        }
     }
     RegCloseKey(k);
 }
@@ -367,16 +377,9 @@ static void recents_save(const wchar_t *host, int port)
     int n = 0;
     wcsncpy_s(list[n++], 300, entry, _TRUNCATE);
     for (int i = 0; i < VNC_RECENT_MAX && n < VNC_RECENT_MAX; i++) {
-        wchar_t name[16];
-        _snwprintf_s(name, 16, _TRUNCATE, L"Recent%d", i);
-        wchar_t val[300] = {0}; /* zero-init: a non-NUL-terminated REG_SZ won't leak tail */
-        DWORD cb = sizeof(val), type = 0;
-        if (RegQueryValueExW(k, name, NULL, &type, (BYTE *)val, &cb) == ERROR_SUCCESS &&
-            type == REG_SZ) {
-            val[299] = 0;
-            if (_wcsicmp(val, entry) != 0)
-                wcsncpy_s(list[n++], 300, val, _TRUNCATE);
-        }
+        wchar_t val[300];
+        if (recents_read(k, i, val) && _wcsicmp(val, entry) != 0)
+            wcsncpy_s(list[n++], 300, val, _TRUNCATE);
     }
     for (int i = 0; i < n; i++) {
         wchar_t name[16];

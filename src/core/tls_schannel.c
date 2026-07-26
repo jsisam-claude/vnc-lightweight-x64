@@ -97,6 +97,18 @@ static BOOL write_n(rfbClient *client, const void *in, unsigned n)
     return WriteToRFBServer(client, (const char *)in, n) == TRUE;
 }
 
+/* Convert the user-typed server host to a NUL-terminated wide string for the
+ * SChannel target name / certificate hostname check. Fails closed on a name too
+ * long to encode: proceeding on a possibly-unterminated buffer would be a stack
+ * over-read, and an empty name must never pass verification. */
+static BOOL host_to_wide(rfbClient *client, wchar_t *out, int cap)
+{
+    ZeroMemory(out, (size_t)cap * sizeof(wchar_t));
+    return MultiByteToWideChar(CP_UTF8, 0,
+                               client->serverHost ? client->serverHost : "",
+                               -1, out, cap) > 0;
+}
+
 /* Negotiate VeNCrypt up to the point where the TLS handshake must begin.
  * On success sets *out_subtype to the chosen (X509) subtype. Returns FALSE if
  * the server offers no acceptable (X509) subtype — anonymous TLS is refused. */
@@ -246,13 +258,7 @@ static BOOL verify_server_cert(rfbClient *client, sc_tls *tls, HCERTSTORE ca)
 
     /* Hostname + SSL policy check. */
     wchar_t whost[256];
-    ZeroMemory(whost, sizeof(whost));
-    if (MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
-                            -1, whost, 256) <= 0) {
-        /* Host too long/invalid to encode: fail closed. (Do NOT proceed with a
-         * possibly-unterminated name — that is a stack over-read — nor an empty
-         * one.) The name is user-typed, so this is not attacker-reachable, but
-         * verification must never continue on a bad name. */
+    if (!host_to_wide(client, whost, 256)) {
         rfbClientLog("Server name too long to verify; refusing.\n");
         CertFreeCertificateChain(chain);
         goto done;
@@ -289,6 +295,21 @@ done:
 
 /* ---- SChannel handshake ------------------------------------------------ */
 
+/* After InitializeSecurityContext, SChannel may hand leftover ciphertext back as
+ * SECBUFFER_EXTRA (e.g. the server coalesced its Finished with the first app
+ * record). Those bytes are already off the socket, so slide them to the front of
+ * tls->enc for the next step; otherwise the input is fully consumed. */
+static void keep_extra(sc_tls *tls, const SecBuffer *extra)
+{
+    if (extra->BufferType == SECBUFFER_EXTRA && extra->cbBuffer) {
+        memmove(tls->enc, tls->enc + (tls->enc_len - extra->cbBuffer),
+                extra->cbBuffer);
+        tls->enc_len = extra->cbBuffer;
+    } else {
+        tls->enc_len = 0;
+    }
+}
+
 static BOOL schannel_handshake(rfbClient *client, sc_tls *tls, const char *ca_path)
 {
     SCHANNEL_CRED sc;
@@ -308,9 +329,7 @@ static BOOL schannel_handshake(rfbClient *client, sc_tls *tls, const char *ca_pa
     tls->cred_ok = TRUE;
 
     wchar_t whost[256];
-    ZeroMemory(whost, sizeof(whost));
-    if (MultiByteToWideChar(CP_UTF8, 0, client->serverHost ? client->serverHost : "",
-                            -1, whost, 256) <= 0)
+    if (!host_to_wide(client, whost, 256))
         return FALSE; /* host too long: fail closed (would be an unterminated target name) */
 
     DWORD req = ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_CONFIDENTIALITY |
@@ -358,25 +377,16 @@ static BOOL schannel_handshake(rfbClient *client, sc_tls *tls, const char *ca_pa
              * hands that back as SECBUFFER_EXTRA — those bytes are already off
              * the socket, so preserve them for ReadFromTLS instead of blocking
              * on a recv that will never complete. */
-            if (inbuf[1].BufferType == SECBUFFER_EXTRA && inbuf[1].cbBuffer) {
-                memmove(tls->enc, tls->enc + (tls->enc_len - inbuf[1].cbBuffer),
-                        inbuf[1].cbBuffer);
-                tls->enc_len = inbuf[1].cbBuffer;
-            } else {
-                tls->enc_len = 0;
-            }
+            keep_extra(tls, &inbuf[1]);
             break;
         }
 
         if (ss == SEC_I_CONTINUE_NEEDED || ss == SEC_E_INCOMPLETE_MESSAGE) {
-            /* Preserve any leftover (SECBUFFER_EXTRA) then read more. */
-            if (ss == SEC_I_CONTINUE_NEEDED && inbuf[1].BufferType == SECBUFFER_EXTRA) {
-                memmove(tls->enc, tls->enc + (tls->enc_len - inbuf[1].cbBuffer),
-                        inbuf[1].cbBuffer);
-                tls->enc_len = inbuf[1].cbBuffer;
-            } else if (ss == SEC_I_CONTINUE_NEEDED) {
-                tls->enc_len = 0;
-            }
+            /* On CONTINUE, keep any leftover ciphertext then read more; on
+             * INCOMPLETE_MESSAGE keep everything already buffered (enc_len stays)
+             * and append the next recv. */
+            if (ss == SEC_I_CONTINUE_NEEDED)
+                keep_extra(tls, &inbuf[1]);
             if (tls->enc_len >= sizeof(tls->enc))
                 return FALSE;
             int r = sock_recv(client, tls->enc + tls->enc_len,

@@ -19,6 +19,11 @@
 #define VNC_MAX_FB_WIDTH  16384
 #define VNC_MAX_FB_HEIGHT 16384
 
+/* Client-side cursors above this in either dimension are ignored. Shared so the
+ * worker's defense-in-depth re-check and the EVT_CURSOR IPC cap agree with the
+ * core. Also bounds the work done per cursor update. */
+#define VNC_MAX_CURSOR_DIM 256
+
 typedef enum {
     VNC_LOG_ERROR = 0,
     VNC_LOG_WARN,
@@ -58,9 +63,10 @@ typedef struct {
      * `state` bit0=Scroll, bit1=Num, bit2=Caps lock. */
     void (*on_led)(void *user, uint8_t state);
 
-    /* QEMU Audio extension. begin/end bracket a playback stream; data delivers
-     * PCM in the format the client requested (see vnc_client_audio_enable). */
-    void (*on_audio_begin)(void *user);
+    /* QEMU Audio extension. data delivers PCM in the format the client requested
+     * (see vnc_client_audio_enable); on_audio_end marks the end of a stream. The
+     * stream-begin event carries no data beyond the already-negotiated format, so
+     * the core consumes it internally and there is no on_audio_begin delegate. */
     void (*on_audio_data)(void *user, const uint8_t *pcm, size_t len);
     void (*on_audio_end)(void *user);
 

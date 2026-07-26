@@ -139,7 +139,7 @@ endif()
 # Runtime hardening for the Windows binaries. The worker is spawned with STRICT
 # Control Flow Guard and CET shadow-stack mitigations ALWAYS_ON, so its image
 # MUST be built /guard:cf (and marked /CETCOMPAT) or CreateProcess refuses it.
-# Applied to both Windows executables via harden_windows_target().
+# Applied to the single Windows executable (vncviewer) via harden_windows_target().
 # /Qspectre needs the optional "MSVC Spectre-mitigated libraries" VS component
 # (else MSB8040). Opt-in so the build works out of the box; enable for hardened
 # release builds after installing that component:  -DVNC_SPECTRE=ON

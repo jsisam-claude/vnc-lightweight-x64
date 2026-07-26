@@ -18,9 +18,7 @@ unsigned vnc_schannel_pending(rfbClient *client);
 /* Clipboard text from an untrusted server is capped before it reaches the UI. */
 #define VNC_MAX_CUT_TEXT (1u << 20) /* 1 MiB */
 
-/* Client-side cursors above this in either dimension are ignored (matches the
- * EVT_CURSOR IPC cap; also bounds work per cursor update). */
-#define VNC_MAX_CURSOR_DIM 256
+/* VNC_MAX_CURSOR_DIM lives in client.h (shared with the worker + IPC cap). */
 
 struct vnc_client {
     rfbClient *rfb;
@@ -137,12 +135,6 @@ static void cb_got_cut_text(rfbClient *rfb, const char *text, int textlen)
         c->delegate.on_cut_text(c->delegate.user, text, len);
 }
 
-static void cb_got_cut_text_utf8(rfbClient *rfb, const char *text, int textlen)
-{
-    /* Extended-Clipboard (UTF-8) path; same capping/forwarding as classic. */
-    cb_got_cut_text(rfb, text, textlen);
-}
-
 static void cb_got_cursor(rfbClient *rfb, int xhot, int yhot,
                           int width, int height, int bytesPerPixel)
 {
@@ -215,12 +207,6 @@ static void cb_led_state(rfbClient *rfb, int value, int pad)
 
 /* ---- QEMU audio extension glue ----------------------------------------- */
 
-static void audio_begin_cb(void *user)
-{
-    vnc_client *c = user;
-    if (c->delegate.on_audio_begin)
-        c->delegate.on_audio_begin(c->delegate.user);
-}
 static void audio_end_cb(void *user)
 {
     vnc_client *c = user;
@@ -247,7 +233,7 @@ static rfbBool audio_handle_message(rfbClient *rfb, rfbServerToClientMsg *msg)
     vnc_client *c = self_of(rfb);
     if (!c)
         return FALSE;
-    qa_sink sink = { c, audio_begin_cb, audio_end_cb, audio_data_cb };
+    qa_sink sink = { c, NULL, audio_end_cb, audio_data_cb };
     return qemu_audio_parse_server_msg(&c->audio_state, audio_read, rfb, &sink)
                ? TRUE : FALSE;
 }
@@ -350,8 +336,9 @@ vnc_client *vnc_client_create(const vnc_client_delegate *delegate)
     c->rfb->GotFrameBufferUpdate = cb_got_update;
     c->rfb->GotXCutText = cb_got_cut_text;
     /* Setting GotXCutTextUTF8 is what makes libvncclient negotiate the Extended
-     * Clipboard (what QEMU speaks). */
-    c->rfb->GotXCutTextUTF8 = cb_got_cut_text_utf8;
+     * Clipboard (what QEMU speaks); it shares the classic path's capping and
+     * forwarding since both deliver a length-counted byte run. */
+    c->rfb->GotXCutTextUTF8 = cb_got_cut_text;
     c->rfb->GotCursorShape = cb_got_cursor;
     c->rfb->HandleKeyboardLedState = cb_led_state;
     c->rfb->appData.useRemoteCursor = TRUE; /* request cursor pseudo-encodings */

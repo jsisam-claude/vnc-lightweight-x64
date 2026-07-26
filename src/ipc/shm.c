@@ -105,8 +105,6 @@ void vnc_shm_close(vnc_shm *s)
     free(s);
 }
 
-void vnc_shm_unlink(const char *name) { (void)name; } /* refcounted on Windows */
-
 void *vnc_shm_native_handle(vnc_shm *s) { return s ? s->handle : NULL; }
 
 vnc_shm *vnc_shm_from_handle(void *handle, size_t max_pixel_bytes)
@@ -223,8 +221,6 @@ void vnc_shm_close(vnc_shm *s)
         shm_unlink(s->name);
     free(s);
 }
-
-void vnc_shm_unlink(const char *name) { shm_unlink(name); }
 
 #endif
 

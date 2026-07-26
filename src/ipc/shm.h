@@ -49,10 +49,6 @@ size_t vnc_shm_capacity(const vnc_shm *s);
 
 void vnc_shm_close(vnc_shm *s);
 
-/* Unlink the backing object (POSIX) — no-op on Windows. Call once, by the UI,
- * after both sides have mapped it. */
-void vnc_shm_unlink(const char *name);
-
 #ifdef _WIN32
 /* Native file-mapping HANDLE, so the sandbox can grant the AppContainer SID
  * access to this specific object and duplicate it as inheritable. Returns NULL

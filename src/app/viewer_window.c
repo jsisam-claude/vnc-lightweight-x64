@@ -10,6 +10,7 @@
 #include "app/app.h"
 #include "app/audio_waveout.h"
 #include "app/diag.h"
+#include "core/client.h"   /* VNC_MAX_FB_* / VNC_MAX_CURSOR_DIM caps */
 #include "core/ftpath.h"
 #include "core/png_write.h"
 #include "ipc/protocol.h"
@@ -200,7 +201,7 @@ static void maybe_request_guest_resize(ViewerApp *app)
         return;
     RECT rc; GetClientRect(app->hwnd, &rc);
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0 || w > 16384 || h > 16384)
+    if (w <= 0 || h <= 0 || w > VNC_MAX_FB_WIDTH || h > VNC_MAX_FB_HEIGHT)
         return;
     if ((size_t)w * (size_t)h * 4u > vnc_shm_capacity(app->shm))
         return;
@@ -446,7 +447,6 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if ((int)wp == VNC_STATUS_DISCONNECTED ||
                    (int)wp == VNC_STATUS_CONNECT_FAILED ||
                    (int)wp == VNC_STATUS_AUTH_FAILED) {
-            BOOL was_connected = app->connected;
             app->connected = FALSE;
             const wchar_t *why =
                 (int)wp == VNC_STATUS_AUTH_FAILED ? L"Authentication failed." :
@@ -458,10 +458,8 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
              * already exited), then offer to reconnect. */
             app_stop_session(app);
             if (MessageBoxW(hwnd, prompt, L"VNC Lightweight",
-                            MB_YESNO | MB_ICONWARNING) == IDYES &&
-                app_start_session(app)) {
-                (void)was_connected;
-            } else {
+                            MB_YESNO | MB_ICONWARNING) != IDYES ||
+                !app_start_session(app)) {
                 DestroyWindow(hwnd);
             }
         }
@@ -562,7 +560,7 @@ void viewer_set_cursor(ViewerApp *app, const uint8_t *blob, unsigned len)
     vnc_ipc_cursor hdr;
     memcpy(&hdr, blob, sizeof(hdr));
     unsigned w = hdr.width, h = hdr.height;
-    if (w == 0 || h == 0 || w > 256 || h > 256)
+    if (w == 0 || h == 0 || w > VNC_MAX_CURSOR_DIM || h > VNC_MAX_CURSOR_DIM)
         return;
     size_t need = (size_t)w * h * 4;
     if (len - sizeof(vnc_ipc_cursor) < need)
@@ -666,6 +664,19 @@ static void post_blob(HWND hwnd, UINT msg, void *blob)
         free(blob);
 }
 
+/* Marshal a length-prefixed byte run (u32 length + payload) to the UI thread.
+ * Used for the two variable-length events (cut-text, cursor) that share exactly
+ * this framing. */
+static void post_len_blob(HWND hwnd, UINT msg, const void *payload, uint32_t len)
+{
+    uint8_t *blob = malloc(4 + (size_t)len);
+    if (!blob)
+        return;
+    memcpy(blob, &len, 4);
+    memcpy(blob + 4, payload, len);
+    post_blob(hwnd, msg, blob);
+}
+
 /* Reader thread: consume worker events and marshal them to the UI thread. */
 DWORD WINAPI viewer_reader_thread(LPVOID arg)
 {
@@ -700,7 +711,7 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
                  * read past it in this trusted process. A violation means a
                  * hostile/broken worker — fail closed. (Bound w,h before the
                  * multiply so it cannot overflow size_t.) */
-                if (w == 0 || h == 0 || w > 16384 || h > 16384 ||
+                if (w == 0 || h == 0 || w > VNC_MAX_FB_WIDTH || h > VNC_MAX_FB_HEIGHT ||
                     (size_t)w * (size_t)h * 4u > vnc_shm_capacity(app->shm)) {
                     diag_logf(DIAG_ERROR,
                               "rejecting bad resize %ux%u (exceeds framebuffer)", w, h);
@@ -716,18 +727,12 @@ DWORD WINAPI viewer_reader_thread(LPVOID arg)
                     post_blob(app->hwnd, WM_APP_UPDATE, copy); }
             }
             break;
-        case VNC_EVT_CUT_TEXT: {
-            uint8_t *blob = malloc(4 + (size_t)len);
-            if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
-                post_blob(app->hwnd, WM_APP_CUTTEXT, blob); }
+        case VNC_EVT_CUT_TEXT:
+            post_len_blob(app->hwnd, WM_APP_CUTTEXT, buf, len);
             break;
-        }
-        case VNC_EVT_CURSOR: {
-            uint8_t *blob = malloc(4 + (size_t)len);
-            if (blob) { memcpy(blob, &len, 4); memcpy(blob + 4, buf, len);
-                post_blob(app->hwnd, WM_APP_CURSOR, blob); }
+        case VNC_EVT_CURSOR:
+            post_len_blob(app->hwnd, WM_APP_CURSOR, buf, len);
             break;
-        }
         case VNC_EVT_LED:
             if (len == sizeof(vnc_ipc_led))
                 PostMessageW(app->hwnd, WM_APP_LED, buf[0], 0);

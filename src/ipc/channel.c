@@ -16,7 +16,6 @@
 uint32_t vnc_ipc_max_payload(uint32_t type)
 {
     switch (type) {
-    case VNC_CMD_CONFIG:         return 1u + 512u;               /* view_only + encodings */
     case VNC_CMD_KEY:            return sizeof(vnc_ipc_key);
     case VNC_CMD_KEY_EXT:        return sizeof(vnc_ipc_key_ext);
     case VNC_CMD_POINTER:        return sizeof(vnc_ipc_pointer);
@@ -25,7 +24,6 @@ uint32_t vnc_ipc_max_payload(uint32_t type)
     case VNC_CMD_PASSWORD:       return 512u;
     case VNC_CMD_AUDIO_ENABLE:   return sizeof(vnc_ipc_audio_cfg);
     case VNC_CMD_AUDIO_DISABLE:  return 0u;
-    case VNC_CMD_FT_OP:          return 4096u;
     case VNC_CMD_REQUEST_RESIZE: return sizeof(vnc_ipc_request_resize);
     case VNC_CMD_SHUTDOWN:       return 0u;
 
@@ -42,7 +40,6 @@ uint32_t vnc_ipc_max_payload(uint32_t type)
     case VNC_EVT_AUDIO_END:      return 0u;
     case VNC_EVT_PASSWORD_REQ:   return 0u;
     case VNC_EVT_LOG:            return 1u + 512u;
-    case VNC_EVT_FT_DATA:        return VNC_IPC_MAX_PAYLOAD;
     default:                     return 0u; /* unknown type => reject */
     }
 }

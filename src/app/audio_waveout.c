@@ -35,8 +35,8 @@ static int qa_bits(uint8_t fmt)
 waveout_sink *waveout_create(uint8_t qa_format, uint8_t channels, uint32_t freq)
 {
     int bits = qa_bits(qa_format);
-    if (bits == 0 || channels < 1 || channels > 8 ||
-        freq < 8000 || freq > 192000)
+    if (bits == 0 || channels < 1 || channels > QA_MAX_CHANNELS ||
+        freq < QA_MIN_FREQ || freq > QA_MAX_FREQ)
         return NULL;
 
     waveout_sink *s = calloc(1, sizeof(*s));
