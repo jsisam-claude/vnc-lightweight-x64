@@ -10,14 +10,16 @@ jobs:
     name: Linux (ASan + tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install deps
         run: |
           sudo apt-get update
+          # tigervnc-tools carries vncpasswd on current Ubuntu (it moved out of
+          # tigervnc-common), and --no-install-recommends won't pull it in.
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build clang \
             libgnutls28-dev gnutls-bin \
-            tigervnc-standalone-server tigervnc-common \
+            tigervnc-standalone-server tigervnc-common tigervnc-tools \
             qemu-system-x86
       - name: Unit tests + cross-process encoding matrix (ASan/UBSan)
         run: bash tests/ci_linux.sh
@@ -28,7 +30,7 @@ jobs:
     name: Linux (audio parser fuzz, smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install deps
         run: |
           sudo apt-get update
@@ -46,11 +48,20 @@ jobs:
     name: Windows (MSVC compile — Win32 + SChannel + sandbox)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Configure (VS 2022, x64)
-        run: cmake --preset vs2022-x64
-      - name: Build product (single vncviewer.exe, hardened + delay-loaded GUI)
-        run: cmake --build build/vs2022-x64 --config Release
+      - uses: actions/checkout@v5
+      # Don't pin a Visual Studio generator: the runner image's VS major version
+      # drifts (the "Visual Studio 17 2022" generator stopped resolving when the
+      # image dropped VS 2022). vswhere finds whatever MSVC is installed,
+      # vcvarsall puts cl.exe on PATH, and the Ninja preset is version-agnostic.
+      # One step for configure+build: the vcvars environment does not persist
+      # across steps.
+      - name: Configure + build (MSVC x64 via vswhere/vcvars, Ninja, Release)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvarsall.bat" x64
+          where cl >NUL 2>&1 || (echo No MSVC toolchain found & exit /b 1)
+          cmake --preset win-ninja-release || exit /b 1
+          cmake --build build/win-ninja-release || exit /b 1
       # This is the first real compile of tls_schannel.c, sandbox_win32.c and the
       # rest of the Win32 UI on a Windows toolchain. Runtime validation against a
       # live QEMU is still a manual step (see docs/TESTING.md).
