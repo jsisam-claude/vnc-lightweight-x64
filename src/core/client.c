@@ -27,6 +27,12 @@ struct vnc_client {
     char *ca_file;   /* owned copy, or NULL */
     bool view_only;
     size_t max_fb_bytes; /* 0 = unlimited; else refuse larger framebuffers */
+    /* Our copy of the framebuffer pointer (== rfb->frameBuffer). We own that
+     * allocation, and rfbClientCleanup() frees the rfbClient WITHOUT freeing
+     * the framebuffer — so every path that ends in rfbClientCleanup (including
+     * rfbInitClient's internal failure cleanup, where rfb is already gone by
+     * the time we regain control) must free it via this pointer. */
+    uint8_t *fb;
     qa_state audio_state;
 };
 
@@ -94,6 +100,7 @@ static rfbBool cb_malloc_framebuffer(rfbClient *rfb)
 
     free(rfb->frameBuffer);
     rfb->frameBuffer = fb;
+    c->fb = fb; /* track for the teardown paths (see struct comment) */
 
     /* Keep the library's notion of the pixel layout consistent with our 32bpp
      * request so decoders write where we expect. */
@@ -400,8 +407,12 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
     /* Pass no argv so nothing is parsed from the command line. */
     int argc = 0;
     if (!rfbInitClient(c->rfb, &argc, NULL)) {
-        /* rfbInitClient frees the client on failure; drop our dangling pointer. */
+        /* rfbInitClient frees the client on failure; drop our dangling pointer.
+         * It does NOT free the framebuffer (app-owned), which may already have
+         * been allocated if initialisation failed after MallocFrameBuffer. */
         c->rfb = NULL;
+        free(c->fb);
+        c->fb = NULL;
         return false;
     }
     /* Final downgrade guard: if the user required TLS (CA set) but no TLS session
@@ -417,8 +428,10 @@ bool vnc_client_connect(vnc_client *c, const char *host, int port)
         emit_log(c, VNC_LOG_ERROR,
                  "connection refused: a CA is configured but the transport is not "
                  "TLS (possible protocol-version/security downgrade)");
-        rfbClientCleanup(c->rfb);
+        rfbClientCleanup(c->rfb); /* frees the client, not the framebuffer */
         c->rfb = NULL;
+        free(c->fb);
+        c->fb = NULL;
         return false;
     }
     return true;
@@ -606,10 +619,10 @@ void vnc_client_destroy(vnc_client *c)
     if (!c)
         return;
     if (c->rfb) {
-        free(c->rfb->frameBuffer);
-        c->rfb->frameBuffer = NULL;
+        c->rfb->frameBuffer = NULL; /* we free via c->fb below */
         rfbClientCleanup(c->rfb);
     }
+    free(c->fb);
     free(c->encodings);
     free(c->ca_file);
     free(c);
