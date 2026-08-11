@@ -27,12 +27,23 @@ struct vnc_client {
     char *ca_file;   /* owned copy, or NULL */
     bool view_only;
     size_t max_fb_bytes; /* 0 = unlimited; else refuse larger framebuffers */
-    /* Our copy of the framebuffer pointer (== rfb->frameBuffer). We own that
-     * allocation, and rfbClientCleanup() frees the rfbClient WITHOUT freeing
-     * the framebuffer — so every path that ends in rfbClientCleanup (including
-     * rfbInitClient's internal failure cleanup, where rfb is already gone by
-     * the time we regain control) must free it via this pointer. */
+    /* Our copy of the framebuffer pointer (== rfb->frameBuffer) AND its geometry,
+     * captured together the moment cb_malloc_framebuffer succeeds. We own the
+     * allocation, and rfbClientCleanup() frees the rfbClient WITHOUT freeing the
+     * framebuffer — so every path that ends in rfbClientCleanup (including
+     * rfbInitClient's internal failure cleanup, where rfb is already gone by the
+     * time we regain control) must free it via this pointer.
+     *
+     * fb_w/fb_h back the width/height accessors instead of rfb->width/height:
+     * the library commits rfb->width/height to a requested resize BEFORE calling
+     * MallocFrameBuffer, so if our callback then REJECTS the size (dimension cap,
+     * store limit, or malloc failure) rfb->width/height describe a buffer that was
+     * never allocated while rfb->frameBuffer still points at the old, smaller one.
+     * A caller reading the framebuffer with those poisoned dimensions would over-
+     * read the heap. Sourcing all three from this one struct keeps geometry and
+     * buffer always consistent. */
     uint8_t *fb;
+    int fb_w, fb_h;
     qa_state audio_state;
 };
 
@@ -100,7 +111,9 @@ static rfbBool cb_malloc_framebuffer(rfbClient *rfb)
 
     free(rfb->frameBuffer);
     rfb->frameBuffer = fb;
-    c->fb = fb; /* track for the teardown paths (see struct comment) */
+    c->fb = fb;      /* track for the teardown paths (see struct comment) */
+    c->fb_w = w;     /* geometry captured together with the buffer, so the */
+    c->fb_h = h;     /* accessors never report a size the buffer can't back */
 
     /* Keep the library's notion of the pixel layout consistent with our 32bpp
      * request so decoders write where we expect. */
@@ -196,6 +209,18 @@ static rfbCredential *cb_get_credential(rfbClient *rfb, int type)
         if (!cred)
             return NULL;
         cred->x509Credential.x509CACertFile = strdup(c->ca_file);
+        /* Never hand the backend a credential with a NULL CA path: the vendored
+         * GnuTLS backend treats "no CA file" as permission to fall back to the OS
+         * system trust store (gnutls_certificate_set_x509_system_trust), which
+         * would silently accept any publicly-trusted certificate for the host —
+         * the opposite of the pinned-CA verification the user asked for. If the
+         * copy failed, fail closed. (The shipped SChannel backend verifies against
+         * our CA explicitly and does not have this fallback, but the invariant
+         * must hold for both.) */
+        if (!cred->x509Credential.x509CACertFile) {
+            free(cred);
+            return NULL;
+        }
         cred->x509Credential.x509CrlVerifyMode = 0; /* rfbX509CrlVerifyNone */
         return cred; /* libvncclient frees it */
     }
@@ -379,6 +404,12 @@ void vnc_client_set_ca_file(vnc_client *c, const char *ca_file)
 
 bool vnc_client_connect(vnc_client *c, const char *host, int port)
 {
+    /* Single-shot: a failed connect frees c->rfb and NULLs it (see teardown
+     * paths below). Retrying on the same object is a caller error — refuse
+     * rather than dereference NULL. Reconnect means a fresh vnc_client. */
+    if (!c->rfb)
+        return false;
+
     /* libvncclient initialised serverHost to strdup(""); free that before we
      * replace it. It owns the new storage and frees it in cleanup. */
     free(c->rfb->serverHost);
@@ -594,19 +625,22 @@ bool vnc_client_audio_disable(vnc_client *c)
     return WriteToRFBServer(c->rfb, (const char *)msg, (unsigned)len) == TRUE;
 }
 
+/* The framebuffer accessors report our tracked buffer and the geometry captured
+ * with it — NOT rfb->width/height, which the library may have advanced to a
+ * resize we rejected (see the fb_w/fb_h note on struct vnc_client). */
 const uint8_t *vnc_client_framebuffer(const vnc_client *c)
 {
-    return c->rfb ? c->rfb->frameBuffer : NULL;
+    return c->fb;
 }
 
 int vnc_client_width(const vnc_client *c)
 {
-    return c->rfb ? c->rfb->width : 0;
+    return c->fb ? c->fb_w : 0;
 }
 
 int vnc_client_height(const vnc_client *c)
 {
-    return c->rfb ? c->rfb->height : 0;
+    return c->fb ? c->fb_h : 0;
 }
 
 const char *vnc_client_desktop_name(const vnc_client *c)
