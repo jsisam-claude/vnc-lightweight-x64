@@ -605,8 +605,8 @@ HandleVncAuth(rfbClient *client)
 static void
 FreeUserCredential(rfbCredential *cred)
 {
-  if (cred->userCredential.username) free(cred->userCredential.username);
-  if (cred->userCredential.password) free(cred->userCredential.password);
+  free(cred->userCredential.username);
+  free(cred->userCredential.password);
   free(cred);
 }
 
@@ -1715,6 +1715,14 @@ SendExtDesktopSize(rfbClient* client, uint16_t width, uint16_t height)
     sdm.width = rfbClientSwap16IfLE(width);
     sdm.height = rfbClientSwap16IfLE(height);
     sdm.numberOfScreens = 1;
+
+    /* Copy existing screen information to send with update. */
+    screen.id = client->screen.id;
+    screen.x = client->screen.x;
+    screen.y = client->screen.y;
+    screen.flags = client->screen.flags;
+
+    /* Get updated width and height for the resize. */
     screen.width = rfbClientSwap16IfLE(width);
     screen.height = rfbClientSwap16IfLE(height);
 
@@ -1815,26 +1823,26 @@ static int
 CompressClipData(Bytef *dest, uLongf *destLen, Bytef *source, uLong sourceLen)
 {
   int ret;
-  z_stream *zs = (z_stream*)malloc(sizeof(z_stream));
-  memset(zs, 0, sizeof(z_stream));
+  z_stream zs;
+  memset(&zs, 0, sizeof(z_stream));
 
-  zs->zfree = Z_NULL;
-  zs->zalloc = Z_NULL;
-  zs->opaque = Z_NULL;
-  ret = deflateInit(zs, Z_DEFAULT_COMPRESSION);
+  zs.zfree = Z_NULL;
+  zs.zalloc = Z_NULL;
+  zs.opaque = Z_NULL;
+  ret = deflateInit(&zs, Z_DEFAULT_COMPRESSION);
   if (ret == Z_OK) {
-    zs->avail_in = sourceLen;
-    zs->next_in = source;
-    zs->avail_out = *destLen;
-    zs->next_out = dest;
+    zs.avail_in = sourceLen;
+    zs.next_in = source;
+    zs.avail_out = *destLen;
+    zs.next_out = dest;
 
     do {
       // Using Z_SYNC_FLUSH instead of Z_FINISH is the key here.
-      ret = deflate(zs, Z_SYNC_FLUSH);
-    } while (ret >= 0 && zs->avail_in > 0);
+      ret = deflate(&zs, Z_SYNC_FLUSH);
+    } while (ret >= 0 && zs.avail_in > 0);
 
-    *destLen = zs->total_out;
-    deflateEnd(zs);
+    *destLen = zs.total_out;
+    deflateEnd(&zs);
   }
   return ret;
 }
@@ -2162,7 +2170,7 @@ HandleRFBServerMessage(rfbClient* client)
           if (!ReadFromRFBServer(client, ((char *)&screen), sz_rfbExtDesktopScreen)) {
             return FALSE;
           }
-          if (screen.id != 0 && screen.width && screen.height) {
+          if (screen.width && screen.height) {
             client->screen = screen;
           } else {
             invalidScreen = TRUE;

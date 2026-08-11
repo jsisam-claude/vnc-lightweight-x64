@@ -17,16 +17,27 @@ are none today).
 | | |
 |---|---|
 | Upstream | https://github.com/LibVNC/libvncserver |
-| Pinned tag | `LibVNCServer-0.9.15` |
-| Pinned commit | `9b54b1ec32731bd23158ca014dc18014db4194c3` |
-| Vendored on | 2026-07-16 |
+| Pinned ref | `master` (no release tag yet — see below) |
+| Pinned commit | `42494999e6492aaab9c1db785ecd293ef10b3aed` (2026-07-06) |
+| Previous pin | `LibVNCServer-0.9.15` / `9b54b1ec32731bd23158ca014dc18014db4194c3` |
+| Vendored on | 2026-08-11 |
 | License | GPL-2.0-or-later (see `libvncserver/COPYING`) |
+
+**Why a commit pin instead of a release tag:** the latest release (0.9.15) predates
+several client-side security fixes that only exist on `master` as of this refresh —
+notably the Tight basic-compression row-clamp (heap OOB write, `540332be`, merged
+from a security-advisory fork), the Tight gradient-decoding overflow fix
+(`5b270544`), and bounds checks in UltraZip subrectangle parsing (`009008e2`,
+`ultra.c` — a decoder we compile). Our own policy ("a client-affecting advisory is
+itself a refresh trigger") demands these; return to tag-pinning at the next
+upstream release that contains them. The clone command below therefore omits
+`--branch` and checks out the pinned commit instead.
 
 ### What we copy
 
 ```
-git clone --depth 1 --branch LibVNCServer-0.9.15 \
-    https://github.com/LibVNC/libvncserver.git /tmp/lvns
+git clone https://github.com/LibVNC/libvncserver.git /tmp/lvns
+git -C /tmp/lvns checkout 42494999e6492aaab9c1db785ecd293ef10b3aed
 
 # headers — entire dir (small; keeps refresh a plain copy)
 cp /tmp/lvns/include/rfb/*.h            third_party/libvncserver/include/rfb/
@@ -75,6 +86,23 @@ appear in `LIBVNCCLIENT_TUS`**:
 `corre.c hextile.c rre.c tight.c trle.c ultra.c zlib.c zrle.c`,
 `common/vncauth.c`, `common/zywrletemplate.c`.
 Compiling any of them separately causes duplicate-symbol link errors.
+
+### Notes from the 2026-08-11 refresh (0.9.15 → `42494999`)
+
+- `rfbconfig.h.cmakein` changed its include-guard line (`#cmakedefine … 1` →
+  `#define …`); our hand-written `config/rfb/rfbconfig.h` already had a proper
+  guard, so no reconciliation was needed.
+- `src/common/crypto_included.c` now compiles its SHA1 helper only under
+  `LIBVNCSERVER_WITH_WEBSOCKETS`; `sha1.c` is therefore unreferenced in our
+  build but stays in the compile list (harmless, keeps the list aligned with
+  the copy list).
+- `tls_gnutls.c` (Linux reference backend) gained a system-CA fallback and an
+  expected-fingerprint API. Our fail-closed posture is unaffected — we always
+  supply an explicit CA file in the credential — and `tests/ci_tls.sh`
+  (reject-on-wrong-CA, fail-closed-without-CA) plus the RFB 3.3 downgrade
+  mock both re-verified green after the refresh.
+- `rfbclient.c` still does not consume server message 255 (QEMU audio hook
+  intact), and the decoder `#include` structure is unchanged.
 
 ### `listen.c`
 
