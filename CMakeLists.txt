@@ -61,9 +61,11 @@ set(LIBVNCCLIENT_TUS
   ${TLS_TU}
   ${LVC}/src/common/sockets.c
   ${LVC}/src/common/crypto_included.c   # no-external-dep crypto (VNC-auth DES works)
-  ${LVC}/src/common/sha1.c
   ${LVC}/src/common/d3des.c
   ${LVC}/src/common/minilzo.c
+  # sha1.c is intentionally absent: its only consumer (crypto_included.c's
+  # hash_sha1) is entirely #ifdef LIBVNCSERVER_WITH_WEBSOCKETS, which we never
+  # define, so compiling it only adds dead object code. See UPDATING.md.
 )
 
 set(ZLIB_TUS

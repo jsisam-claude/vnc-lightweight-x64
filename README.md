@@ -66,16 +66,23 @@ the vendored protocol core builds and is proven against real servers.
 Requires only CMake and a C compiler (Visual Studio Enterprise 2022 on Windows).
 
 ```
-# Windows product (from a VS 2022 developer environment, or "Open Folder" in VS):
-cmake --preset vs2022-x64
-cmake --build build/vs2022-x64
+# Windows product, from an x64 Native Tools Command Prompt. The `windows`
+# (Ninja) preset is toolchain-version agnostic — it builds with whatever MSVC
+# is installed, so it keeps working across Visual Studio versions:
+cmake --preset windows
+cmake --build build/windows
 
 # Portable headless test client (Linux/macOS/Windows), with sanitizers:
 cmake --preset linux-asan
 cmake --build build/linux-asan
 ```
 
-See `docs/TESTING.md` for how to verify against a real server.
+Prefer a version-pinned Visual Studio generator (or "Open Folder" in the IDE)?
+Use the `vs2022-x64` / `vs2026-x64` presets instead — but note a pinned
+generator fails to configure if that exact VS version isn't present, which is
+why CI and the command above use the version-agnostic `windows` preset. See
+`docs/TESTING.md` for the full preset table and how to verify against a real
+server.
 
 ## Security
 

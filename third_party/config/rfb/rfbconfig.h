@@ -21,7 +21,10 @@
  * any added #cmakedefine here.
  */
 
-/* ---- Package version: pinned to the vendored release (LibVNCServer 0.9.15) ---- */
+/* ---- Package version: mirrors what upstream's build would generate. The pin is
+ *      a post-0.9.15 master commit (see third_party/UPDATING.md), but upstream
+ *      has not bumped project(VERSION) past 0.9.15, so these strings still match
+ *      the vendored tree. Reconcile if a future pin changes the upstream version. */
 #define LIBVNCSERVER_PACKAGE_STRING     "LibVNCServer 0.9.15"
 #define LIBVNCSERVER_PACKAGE_VERSION    "0.9.15"
 #define LIBVNCSERVER_VERSION            "0.9.15"

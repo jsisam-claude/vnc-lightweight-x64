@@ -22,7 +22,9 @@ wait_port() {
 BUILD=build/linux-tls
 echo "== configure + build ($BUILD, GnuTLS) =="
 cmake --preset linux-tls >/dev/null
-cmake --build "$BUILD"
+# This gate only drives vnctest (the encoding/unit tests are covered by
+# ci_linux.sh); build just that target instead of every executable.
+cmake --build "$BUILD" --target vnctest
 
 CERT="$(mktemp -d)"
 QEMU_PID=""

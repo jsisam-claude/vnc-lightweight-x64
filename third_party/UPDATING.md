@@ -74,9 +74,21 @@ Controlled in `CMakeLists.txt` (`LIBVNCCLIENT_TUS`), not by deleting files:
 
 - `src/libvncclient/sasl.c`, `sasl.h` — SASL auth. Not compiled (no Cyrus SASL).
   `sasl.h` is copied because `rfbclient.c` includes it unconditionally.
-- `src/libvncclient/tls_gnutls.c`, `tls_openssl.c` — real TLS backends. Not
-  compiled; we build `tls_none.c` now and will add an OS-SChannel backend later
-  (see M6). `tls.h` is copied because `rfbclient.c` includes it unconditionally.
+- `src/libvncclient/sha1.c` — SHA1 helper. Not compiled: its only consumer
+  (`crypto_included.c`'s `hash_sha1`) is entirely `#ifdef
+  LIBVNCSERVER_WITH_WEBSOCKETS`, which we never define, so it would only add dead
+  object code. `sha.h`/`sha-private.h` stay copied for the same reason `sasl.h`
+  does (unconditional include in `crypto_included.c`).
+- `src/libvncclient/tls_openssl.c` — OpenSSL TLS backend. Never compiled (we do
+  not depend on OpenSSL). `tls.h` is copied because `rfbclient.c` includes it
+  unconditionally.
+- `src/libvncclient/tls_gnutls.c` — the TLS backend selection is build-specific
+  (see `CMakeLists.txt` `TLS_TU`): the Windows **product** compiles our
+  `src/core/tls_schannel.c` (SChannel); the Linux **reference / CI** build
+  (`VNC_WITH_GNUTLS=ON`, the `linux-tls` preset, exercised by `tests/ci_tls.sh`
+  on every push) compiles this vendored `tls_gnutls.c`; everything else compiles
+  `tls_none.c`. So `tls_gnutls.c` is a LIVE backend on the CI path and its diff
+  MUST be security-reviewed on every refresh — see the known-issues note below.
 
 ### The `#include`d decoder trick (important)
 
@@ -93,16 +105,54 @@ Compiling any of them separately causes duplicate-symbol link errors.
   `#define …`); our hand-written `config/rfb/rfbconfig.h` already had a proper
   guard, so no reconciliation was needed.
 - `src/common/crypto_included.c` now compiles its SHA1 helper only under
-  `LIBVNCSERVER_WITH_WEBSOCKETS`; `sha1.c` is therefore unreferenced in our
-  build but stays in the compile list (harmless, keeps the list aligned with
-  the copy list).
-- `tls_gnutls.c` (Linux reference backend) gained a system-CA fallback and an
-  expected-fingerprint API. Our fail-closed posture is unaffected — we always
-  supply an explicit CA file in the credential — and `tests/ci_tls.sh`
-  (reject-on-wrong-CA, fail-closed-without-CA) plus the RFB 3.3 downgrade
-  mock both re-verified green after the refresh.
+  `LIBVNCSERVER_WITH_WEBSOCKETS`, leaving `sha1.c` unreferenced; it was dropped
+  from `LIBVNCCLIENT_TUS` (dead object code otherwise). The file is still copied.
 - `rfbclient.c` still does not consume server message 255 (QEMU audio hook
   intact), and the decoder `#include` structure is unchanged.
+
+#### Known upstream issues in this pin (review on the next refresh)
+
+The `42494999` master snapshot carries a few client-side defects. None is a
+regression in *our* shipped-and-reachable behavior today, but each is recorded
+here so the next refresher re-checks whether upstream fixed it (and can then
+drop the corresponding note / local mitigation):
+
+- **`sockets.c` busy-spin (upstream `ad559271`, all builds).** `WaitForMessage`
+  now returns 1 immediately when `client->buffered > 0`, but `ReadFromRFBServer`
+  reuses `WaitForMessage(client, USECS_WAIT_PER_RETRY)` as its EAGAIN back-off
+  sleep. In the small-read branch `buffered` is the *partial-fill* counter, so a
+  message body split across TCP segments spins read→EAGAIN→instant-return at
+  100% CPU until the rest arrives (worst case: a server that stalls mid-message
+  pins a core while the worker holds `api_lock`). The socket is non-blocking
+  (`ConnectClientToTcpAddr6WithTimeout` never restores blocking). Contained by
+  the sandbox Job object; a malicious server can already freeze the session by
+  not sending. If upstream has not fixed it, weigh a recorded patch at the
+  `ReadFromRFBServer` retry sites (do NOT edit in place without a patch entry).
+- **`tls_gnutls.c` dropped its "no CA ⇒ fail closed" guard (upstream
+  `b5dfe0d9`).** `CreateX509CertCredential` now falls back to the OS system
+  trust store when no `x509CACertFile` is set, instead of returning NULL. Our
+  `cb_get_credential` (src/core/client.c) already returns NULL when no `--ca` is
+  configured, and now also fails closed if `strdup(ca_file)` fails, so it never
+  hands the backend a credential with a NULL CA path — but any future credential
+  path that omits the CA file would silently trust the system store on the CI
+  build. Keep that invariant.
+- **`tls_gnutls.c` double-free + leak on error paths.** On a
+  `gnutls_credentials_set` failure `HandleVeNCryptAuth` frees the callback data
+  via `FreeTLS` and then `free()`s it again; an `InitializeTLSSession` failure
+  leaks the credential. Rare error paths, GnuTLS reference build only (never
+  shipped). `tests/ci_tls.sh` runs with `detect_leaks=0`, so the leak is not
+  gated.
+- **`ultra.c` `HandleUltraBPP` short-decompress.** Unlike the newly-hardened
+  UltraZip path, a decompressed length shorter than the rectangle still calls
+  `GotBitmap` for the full rect, copying stale/uninitialized `raw_buffer` tail
+  into the framebuffer. `ultra` is in our default encodings; contained by the
+  worker sandbox (the worker only ever exposes decoded pixels, which the UI
+  caps), but worth watching for an upstream fix.
+- **`vncviewer.c` `-repeaterdest` parses `argv[i]` instead of `argv[i+1]`, and
+  `parse_host_and_port` no longer NULL-checks its allocations.** Dead for us —
+  `vnc_client_connect` calls `rfbInitClient` with `argc=0`/`argv=NULL`, so the
+  option parser never runs — but it would become live if any entry point ever
+  forwards a real argv.
 
 ### `listen.c`
 
@@ -143,8 +193,9 @@ and `uncompr.c` — none are reachable from libvncclient's client path.
 
 ## Refresh checklist (do this EVERY time you bump a pin)
 
-1. Re-run the copy commands above with the new tag; update the tag/commit/date
-   tables here.
+1. Re-run the copy commands above with the new ref (a release tag when one
+   exists; otherwise the pinned master commit — libvncserver is currently on a
+   commit pin, see §1); update the ref/commit/date tables here.
 2. **Diff `include/rfb/rfbconfig.h.cmakein`** (old vs new) and reconcile any
    added/removed `#cmakedefine` into the hand-written
    `third_party/config/rfb/rfbconfig.h`.
