@@ -32,7 +32,12 @@ echo "== unit tests =="
 
 echo "== start a VNC server for the matrix =="
 PASS_DIR="$(mktemp -d)"
-trap 'kill "${XVNC_PID:-0}" 2>/dev/null || true; rm -rf "$PASS_DIR"' EXIT
+# NB: guard on XVNC_PID being non-empty rather than defaulting it to 0 — `kill 0`
+# signals the whole PROCESS GROUP, i.e. this script. When we exit before Xvnc
+# starts (i.e. a missing dependency), that turned a clean `exit 1` plus its
+# diagnostic into a bare SIGTERM/143, hiding why the gate failed.
+XVNC_PID=""
+trap 'if [ -n "$XVNC_PID" ]; then kill "$XVNC_PID" 2>/dev/null || true; fi; rm -rf "$PASS_DIR"' EXIT
 printf 'ci-secret\nci-secret\n' | vncpasswd -f > "$PASS_DIR/passwd" 2>/dev/null || \
   { echo "vncpasswd unavailable"; exit 1; }
 chmod 600 "$PASS_DIR/passwd"

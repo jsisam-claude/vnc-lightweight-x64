@@ -103,10 +103,13 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 if(MSVC)
   set(OUR_WARN_FLAGS  /W4 /sdl)
-  # Vendored code: warnings off. /sdl- is required because /sdl (from the target)
-  # otherwise leaks onto these sources and PROMOTES benign warnings (e.g. C4146,
-  # unary minus on unsigned, in the crypto/bit code) to errors; source-level
-  # options come after target options on the command line, so /sdl- wins.
+  # Vendored code: warnings off. /sdl- and /wd4146 are kept DEFENSIVELY: /sdl
+  # promotes benign warnings (e.g. C4146, unary minus on unsigned, in the
+  # crypto/bit code) to hard errors, so if /sdl ever reaches these sources —
+  # from CMAKE_C_FLAGS, a preset, a toolchain file, or a target-level flag added
+  # later — the vendored build would break. These two flags make that impossible
+  # regardless of where /sdl comes from. (Our own /W4 /sdl are attached
+  # per-source below, so they no longer land on vendored TUs in the first place.)
   set(VENDOR_WARN_FLAGS /W0 /sdl- /wd4146
       -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS)
 else()
@@ -126,6 +129,36 @@ endif()
 
 set_source_files_properties(${VENDOR_SOURCES} PROPERTIES
   COMPILE_OPTIONS "${VENDOR_WARN_FLAGS}")
+
+# Our strict flags attach to our FILES, not to the targets. Applying /W4 /sdl at
+# target level would also land them on the vendored TUs, where the per-source
+# /W0 /sdl- above has to override them — and MSVC reports every such override as
+# "command line warning D9025: overriding '/W4' with '/W0'", two lines per
+# vendored TU (36 warnings), which drowns out real diagnostics in the build log.
+# Attaching both sets per-source means each file gets exactly one warning policy
+# and the two never collide. (Every .c we compile must be listed here; anything
+# missing silently loses -Wall/-W4. tls_schannel.c is deliberately absent: it
+# rides in VENDOR_SOURCES and is switched back to OUR_WARN_FLAGS below.)
+set(OUR_SOURCES
+  ${CORE_SOURCES}
+  ${IPC_SOURCES}
+  ${CMAKE_SOURCE_DIR}/src/core/ftpath.c
+  ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c
+  ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c
+  ${CMAKE_SOURCE_DIR}/src/app/main_win32.c
+  ${CMAKE_SOURCE_DIR}/src/app/viewer_window.c
+  ${CMAKE_SOURCE_DIR}/src/app/input_win32.c
+  ${CMAKE_SOURCE_DIR}/src/app/clipboard_win32.c
+  ${CMAKE_SOURCE_DIR}/src/app/audio_waveout.c
+  ${CMAKE_SOURCE_DIR}/src/app/sandbox_win32.c
+  ${CMAKE_SOURCE_DIR}/src/app/diag.c
+  ${CMAKE_SOURCE_DIR}/src/test/ipc_test.c
+  ${CMAKE_SOURCE_DIR}/src/test/audio_test.c
+  ${CMAKE_SOURCE_DIR}/src/test/ftpath_test.c
+  ${CMAKE_SOURCE_DIR}/src/test/qemu_audio_fuzz.c
+)
+set_source_files_properties(${OUR_SOURCES} PROPERTIES
+  COMPILE_OPTIONS "${OUR_WARN_FLAGS}")
 
 # tls_schannel.c is OUR hand-written, security-critical code (it parses the
 # untrusted VeNCrypt/TLS handshake). It only rides in VENDOR_SOURCES because it
@@ -196,7 +229,6 @@ if(NOT WIN32)
     ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c
   )
   target_include_directories(vnctest PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(vnctest PRIVATE ${OUR_WARN_FLAGS})
   target_compile_definitions(vnctest PRIVATE VNC_HEADLESS_STANDALONE)
   attach_tls(vnctest)
 
@@ -207,7 +239,6 @@ if(NOT WIN32)
     ${CMAKE_SOURCE_DIR}/src/worker/worker_main.c
   )
   target_include_directories(vncworker PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(vncworker PRIVATE ${OUR_WARN_FLAGS})
   target_compile_definitions(vncworker PRIVATE VNC_WORKER_STANDALONE)
   target_link_libraries(vncworker PRIVATE Threads::Threads)
   attach_tls(vncworker)
@@ -226,7 +257,6 @@ if(UNIX AND NOT APPLE)
     ${CMAKE_SOURCE_DIR}/src/test/ipc_test.c
   )
   target_include_directories(ipc_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(ipc_test PRIVATE ${OUR_WARN_FLAGS})
   target_link_libraries(ipc_test PRIVATE Threads::Threads rt)
   add_dependencies(ipc_test vncworker)
 
@@ -237,7 +267,6 @@ if(UNIX AND NOT APPLE)
     ${CMAKE_SOURCE_DIR}/src/test/audio_test.c
   )
   target_include_directories(audio_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(audio_test PRIVATE ${OUR_WARN_FLAGS})
 
   # Path-traversal defense for file transfer (security-critical, portable).
   add_executable(ftpath_test
@@ -245,7 +274,6 @@ if(UNIX AND NOT APPLE)
     ${CMAKE_SOURCE_DIR}/src/test/ftpath_test.c
   )
   target_include_directories(ftpath_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(ftpath_test PRIVATE ${OUR_WARN_FLAGS})
 endif()
 
 # libFuzzer harness over the audio parser (clang only; -DENABLE_FUZZ=ON).
@@ -287,8 +315,14 @@ if(WIN32)
     ${CMAKE_SOURCE_DIR}/src/headless/headless_main.c # --headless mode
   )
   target_include_directories(vncviewer PRIVATE ${VENDOR_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
-  target_compile_options(vncviewer PRIVATE ${OUR_WARN_FLAGS})
-  target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  # NB the trailing '=' on WIN32_LEAN_AND_MEAN: without it MSVC defines the macro
+  # as 1, while rfbclient.h:36 defines it EMPTY and unguarded — two different
+  # replacement lists for one macro, which is C4005 "macro redefinition" on every
+  # /W4 TU that includes that header. Defining it empty here makes the two
+  # definitions token-identical, so the redefinition is benign and silent. The
+  # macro is only ever presence-tested (#ifndef in windows.h), so the value is
+  # irrelevant to behavior.
+  target_compile_definitions(vncviewer PRIVATE WIN32_LEAN_AND_MEAN= UNICODE _UNICODE)
   # Always-loaded imports, all win32k-free and Microsoft-signed (CIG-safe) so the
   # sandboxed worker can map them: winsock + the SChannel TLS DLLs. Everything the
   # worker never calls — the GUI DLLs AND advapi32 (SIDs/ACLs are UI-only) — is

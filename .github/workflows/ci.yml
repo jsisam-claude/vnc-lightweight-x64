@@ -5,10 +5,25 @@ on:
     branches: ["**"]
   pull_request:
 
+# Least privilege: this workflow only ever reads the repo (checkout). Without an
+# explicit block the job's GITHUB_TOKEN gets the repository-wide default scope,
+# which is far broader than CI needs.
+permissions:
+  contents: read
+
+# Superseded runs are wasted runner minutes: a second push to the same branch
+# makes the first run's result irrelevant, so cancel it instead of letting both
+# finish. Keyed per branch/PR, so pushes to different branches never cancel
+# each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Linux (ASan + tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Install deps
@@ -29,6 +44,7 @@ jobs:
   linux-fuzz:
     name: Linux (audio parser fuzz, smoke)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Install deps
@@ -47,6 +63,7 @@ jobs:
   windows:
     name: Windows (MSVC compile — Win32 + SChannel + sandbox)
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       # Don't pin a Visual Studio generator: the runner image's VS major version
