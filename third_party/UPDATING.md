@@ -64,8 +64,14 @@ cp /tmp/lvns/COPYING                    third_party/libvncserver/COPYING
 - `src/common/crypto_openssl.c`, `crypto_libgcrypt.c` — external crypto backends;
   we use `crypto_included.c` (no external deps). VNC Authentication (DES) works;
   Apple-ARD / RSA-AES paths are compiled but their AES/DH stubs return failure.
-- `src/common/turbojpeg.c`, `turbojpeg.h` — only needed for the Tight encoding
-  with JPEG. Deferred (see M9); would require vendoring libjpeg-turbo.
+- `src/common/turbojpeg.c`, `turbojpeg.h` — needed for the Tight encoding *at
+  all*, not just its JPEG sub-path: upstream wraps the whole of `tight.c` in
+  `#ifdef LIBVNCSERVER_HAVE_LIBZ` / `#ifdef LIBVNCSERVER_HAVE_LIBJPEG` and
+  includes `turbojpeg.h` inside that guard, so with LIBJPEG undefined the basic /
+  palette / gradient Tight paths compile out too. That is also why `tight.c` can
+  sit in the `#include`d-decoder list below while contributing no code. Adding
+  Tight would require vendoring libjpeg-turbo — deliberately out of scope, see
+  "Deliberately out of scope" in `README.md`.
 - `src/common/base64.c/.h` — WebSockets only; we do not build WebSockets.
 
 ### What is copied but NOT compiled
@@ -74,11 +80,12 @@ Controlled in `CMakeLists.txt` (`LIBVNCCLIENT_TUS`), not by deleting files:
 
 - `src/libvncclient/sasl.c`, `sasl.h` — SASL auth. Not compiled (no Cyrus SASL).
   `sasl.h` is copied because `rfbclient.c` includes it unconditionally.
-- `src/libvncclient/sha1.c` — SHA1 helper. Not compiled: its only consumer
-  (`crypto_included.c`'s `hash_sha1`) is entirely `#ifdef
-  LIBVNCSERVER_WITH_WEBSOCKETS`, which we never define, so it would only add dead
-  object code. `sha.h`/`sha-private.h` stay copied for the same reason `sasl.h`
-  does (unconditional include in `crypto_included.c`).
+- `src/common/sha1.c` — SHA1 helper (note: `common/`, not `libvncclient/`). Not
+  compiled: its only consumer (`crypto_included.c`'s `hash_sha1`) is entirely
+  `#ifdef LIBVNCSERVER_WITH_WEBSOCKETS`, which we never define, so it would only
+  add dead object code. `sha.h` stays copied because `crypto_included.c` includes
+  it unconditionally; `sha-private.h` is copied only because the uncompiled
+  `sha1.c` includes it (nothing we compile references it).
 - `src/libvncclient/tls_openssl.c` — OpenSSL TLS backend. Never compiled (we do
   not depend on OpenSSL). `tls.h` is copied because `rfbclient.c` includes it
   unconditionally.
@@ -92,9 +99,10 @@ Controlled in `CMakeLists.txt` (`LIBVNCCLIENT_TUS`), not by deleting files:
 
 ### The `#include`d decoder trick (important)
 
-`rfbclient.c` `#include`s the decoder `.c` files and `vncauth.c` directly (the
-multi-bit-depth template trick), so they are **present in the tree but must NOT
-appear in `LIBVNCCLIENT_TUS`**:
+`rfbclient.c` `#include`s the decoder `.c` files and `common/vncauth.c` directly
+(the multi-bit-depth template trick), and `zrle.c` in turn `#include`s
+`common/zywrletemplate.c`. All of them are therefore **present in the tree but
+must NOT appear in `LIBVNCCLIENT_TUS`**:
 `corre.c hextile.c rre.c tight.c trle.c ultra.c zlib.c zrle.c`,
 `common/vncauth.c`, `common/zywrletemplate.c`.
 Compiling any of them separately causes duplicate-symbol link errors.
@@ -184,10 +192,15 @@ for f in adler32.c compress.c crc32.c crc32.h deflate.c deflate.h inffast.c \
 done
 ```
 
-We vendor the **deflate + inflate** core. Inflate is needed for ZRLE / Zlib /
-TRLE decoding; deflate + `compress()` / `compressBound()` are needed for the RFB
-Extended Clipboard (M3). We omit the gzip file wrappers (`gz*.c`), `infback.c`,
-and `uncompr.c` — none are reachable from libvncclient's client path.
+We vendor the **deflate + inflate** core. Inflate is needed for ZRLE and Zlib
+decoding (`zrle.c`, `zlib.c`) and for the inbound RFB Extended Clipboard
+(`rfbclient.c`) — **not** for TRLE, which is a pure tile/palette decoder with no
+zlib use at all. Deflate plus `compressBound()` is needed for the outbound
+Extended Clipboard (`rfbclient.c`'s `CompressClipData`, M3), and `compress.c`
+additionally for **our own** `src/core/png_write.c`, which calls
+`compressBound()`/`compress2()` to write PNG screenshots (M7) and is linked into
+every target. We omit the gzip file wrappers (`gz*.c`), `infback.c`, and
+`uncompr.c` — none are reachable from libvncclient's client path.
 
 ---
 
@@ -206,10 +219,21 @@ and `uncompr.c` — none are reachable from libvncclient's client path.
 4. **Grep `rfbclient.c` for `rfbQemuEvent` / server message type 255 handling.**
    Our QEMU-audio extension (added in M5) owns server message 255. If upstream
    starts consuming it, our extension hook breaks — reconcile before shipping.
-5. Re-run the full verification matrix under the `linux-asan` preset
-   (see `docs/TESTING.md`). All encodings must match and be sanitizer-clean.
+5. Re-run **both** CI gates — exactly what `.github/workflows/ci.yml` runs:
+   - `bash tests/ci_linux.sh` — `linux-asan` preset; ASan/UBSan unit tests plus
+     the 9-encoding cross-process matrix. All encodings must match and be
+     sanitizer-clean.
+   - `bash tests/ci_tls.sh` — `linux-tls` preset. **This is the only gate that
+     compiles the vendored `tls_gnutls.c` at all** (`linux-asan` leaves
+     `VNC_WITH_GNUTLS` off and builds `tls_none.c`), so skipping it means the
+     TLS backend you were told to security-review in step 3 was never even built.
 6. Confirm the compiled translation-unit list in `CMakeLists.txt` still matches
    upstream's client source list (new decoders `#include`d vs separately built).
+7. **Walk the "Known upstream issues in this pin" list in §1.** For each entry,
+   re-read the corresponding code in the *new* snapshot and either delete the
+   note (upstream fixed it — say so in the refresh notes) or carry it forward
+   with its status confirmed. Without this step those recorded defects silently
+   outlive the pin they describe, and a fix we are waiting on never gets noticed.
 
 ## Local patches
 

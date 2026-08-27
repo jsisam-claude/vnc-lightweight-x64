@@ -17,9 +17,10 @@ The trust boundary is between the two *processes*, not two files.
         │  • keyboard / mouse      │◄───────►│  • libvncclient (all RFB     │
         │  • clipboard             │ channel │    parsing / decoders)       │
         │  • audio (waveOut)       │         │  • zlib inflate              │
-        │  • TLS handshake         │         │                              │
-        │  • file I/O broker       │         │  no FS / registry / UI /     │
-        │  • password prompt       │         │  extra network               │
+        │  • CA path selection     │         │  • VeNCrypt TLS (SChannel)   │
+        │  • file I/O broker       │         │  one capability: outbound    │
+        │  • password prompt       │         │  TCP. no registry / UI; FS   │
+        │                          │         │  only = read the CA file     │
         └───────────┬──────────────┘         └──────────────┬───────────────┘
                     │        shared framebuffer (32bpp)      │
                     └────────────────────────────────────────┘
@@ -34,8 +35,11 @@ AppContainer with:
   images only), win32k syscalls disabled, heap-terminate-on-corruption, forced +
   high-entropy + bottom-up ASLR, strict handle checks, extension-point disable,
   strict CFG, CET shadow stacks;
-- access to exactly two IPC pipe ends and the framebuffer mapping, each DACL'd to
-  the worker's AppContainer SID — nothing else;
+- access to exactly two IPC pipe ends and the framebuffer mapping — the only
+  handles inherited into the worker — plus, when a `--ca` bundle is configured,
+  read-only access to that one PEM file (the worker runs the TLS handshake, so it
+  opens the bundle by path). Each is DACL'd to the worker's AppContainer SID;
+  nothing else on the system is reachable;
 - a **Job object** as second-line, OS-enforced *availability* containment (the
   AppContainer bounds what the worker can reach; the Job bounds what it can
   consume): a ~512 MB committed-memory cap and `ActiveProcessLimit = 1` (no child
@@ -75,7 +79,8 @@ before acting, and the worker re-validates every command.
 
 ## Portability & testing
 
-`src/core` (the libvncclient wrapper) and `src/ipc` are portable C. This lets the
+`src/core` (the libvncclient wrapper, except the Windows-only SChannel backend
+`tls_schannel.c`) and `src/ipc` are portable C. This lets the
 whole worker + IPC + shared-memory pipeline run and be verified on Linux via
 `ipc_test`, which plays the UI role headlessly, spawns the real `vncworker`, and
 checksums the shared framebuffer — the result matches the direct `vnctest`
@@ -84,4 +89,8 @@ two standalone binaries (`vncworker`, `vnctest`) via thin `main()` shims; on
 Windows the identical entry points (`vnc_worker_main`, `vnc_headless_main`) are
 compiled into the single `vncviewer.exe` and reached through `wWinMain`'s mode
 dispatch. Only the AppContainer wrapping and the GDI/audio/TLS glue are
-Windows-specific and validated on a Windows host (see `docs/TESTING.md`).
+Windows-specific. They are compile-checked by the Windows CI job (MSVC via
+`cmake --preset win-ninja-release`) but **not yet exercised at runtime**: the
+SChannel backend's VeNCrypt/X509 behavior is cross-checked in Linux CI against a
+GnuTLS reference build, and the rest awaits the manual checklist in
+`docs/TESTING.md` on a real Windows host.

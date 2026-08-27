@@ -59,10 +59,13 @@
     {
       "name": "win-asan",
       "displayName": "Windows MSVC + AddressSanitizer (Debug)",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/win-asan",
-      "cacheVariables": { "CMAKE_C_FLAGS": "/fsanitize=address" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "/fsanitize=address",
+        "CMAKE_C_FLAGS_DEBUG": "/Zi /Ob0 /Od"
+      },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {

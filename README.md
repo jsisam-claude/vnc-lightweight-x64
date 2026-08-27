@@ -7,14 +7,21 @@ server, fully featured.
 
 ## Status
 
-Under construction, milestone by milestone (see the plan). **M1 is complete**:
-the vendored protocol core builds and is proven against real servers.
+Feature-complete through M7, with M8's transport deliberately deferred (see
+below). The portable protocol core, the IPC/worker split, and the TLS path are
+proven in Linux CI on every push; the Windows-only code (GUI, AppContainer
+sandbox, waveOut, SChannel) is compile-checked by CI but still **pending
+validation on a Windows host** — nothing below marked "pending" has been run
+against a real desktop.
 
 - [x] **M1** — vendor libvncclient + zlib; portable core; headless proof
 - [x] **M2** — two-process split: IPC + sandboxed decoder worker + Win32 shell
       (worker/IPC/core verified cross-process on Linux; Win32 GUI + AppContainer
       pending validation on a Windows host)
-- [ ] **M3** — full encoding set + clipboard (RFB Extended Clipboard) + cursor
+- [x] **M3** — full encoding set (`copyrect zrle hextile zlib corre rre trle
+      ultra raw`, all nine checksum-verified cross-process in CI) + clipboard
+      (RFB Extended Clipboard) + client-side cursor (both Windows-UI halves
+      pending Windows-host validation)
 - [x] **M4** — QEMU Extended Key Event + LED state
 - [x] **M5** — QEMU Audio (parser fuzzed + live-negotiated vs QEMU; waveOut sink
       pending Windows-host validation)
@@ -63,36 +70,46 @@ the vendored protocol core builds and is proven against real servers.
 
 ## Building
 
-Requires only CMake and a C compiler (Visual Studio Enterprise 2022 on Windows).
+Requires CMake 3.25+, Ninja, and a C compiler — any recent MSVC on Windows, no
+particular Visual Studio edition or version. No package manager, no fetch step:
+all third-party code is vendored and compiled straight in.
 
 ```
-# Windows product, from an x64 Native Tools Command Prompt. The `windows`
-# (Ninja) preset is toolchain-version agnostic — it builds with whatever MSVC
-# is installed, so it keeps working across Visual Studio versions:
-cmake --preset windows
-cmake --build build/windows
+# Windows product, from an x64 Native Tools Command Prompt:
+cmake --preset win-ninja-release
+cmake --build build/win-ninja-release
 
-# Portable headless test client (Linux/macOS/Windows), with sanitizers:
+# Portable headless test client (Linux), with sanitizers:
 cmake --preset linux-asan
 cmake --build build/linux-asan
 ```
 
-Prefer a version-pinned Visual Studio generator (or "Open Folder" in the IDE)?
-Use the `vs2022-x64` / `vs2026-x64` presets instead — but note a pinned
-generator fails to configure if that exact VS version isn't present, which is
-why CI and the command above use the version-agnostic `windows` preset. See
-`docs/TESTING.md` for the full preset table and how to verify against a real
-server.
+**[docs/BUILDING.md](docs/BUILDING.md) is the single build guide** — every
+preset and target, the exact dependency lists, the Windows toolchain setup, and
+troubleshooting. `docs/TESTING.md` covers how to verify against a real server.
 
 ## Security
 
 The VNC server is treated as fully untrusted input. Defense is layered —
-prevention (latest-release pinning, minimized attack surface, trust-boundary
-validation), discovery (permanent ASan/UBSan gate + fuzzing of every parser),
+prevention (pinned, security-reviewed upstream sources, minimized attack
+surface, trust-boundary validation), discovery (a permanent ASan/UBSan gate over
+the cross-process encoding matrix, plus a libFuzzer harness over the QEMU audio
+parser — the one RFB-level parser we wrote ourselves; the vendored decoders are
+fuzzed upstream under OSS-Fuzz, whose fixes we inherit by tracking releases),
 and **containment**: in the Windows product all protocol parsing runs in a
-separate worker process inside an AppContainer with ACG/CIG, the win32k syscall
-surface removed, and no filesystem/registry/UI/network reach, brokered to a thin
-trusted UI process. A compromised decoder gets a sandbox with nothing in it.
+separate worker process inside an AppContainer with ACG/CIG and the win32k
+syscall surface removed. That worker holds exactly one capability —
+`internetClient`, because it owns the outbound TCP connection to the server — and
+gets no registry or UI reach, no filesystem reach beyond a read-only ACE on the
+`--ca` bundle when one is supplied, and nothing else but its two IPC pipe ends
+and the framebuffer mapping, each DACL'd to its package SID. Everything else is
+brokered to a thin trusted UI process, and a Job object caps what a compromised
+worker can *consume* (512 MB commit, no child processes, kill-on-close).
+
+Vendored upstream is pinned and re-reviewed on every refresh per
+`third_party/UPDATING.md`: zlib at release `v1.3.2`, and libvncserver at a
+post-0.9.15 `master` commit rather than a release tag, because several
+client-side security fixes we require are not in any release yet.
 
 The product ships as a **single `vncviewer.exe`** (Chromium-style): launched
 normally it is the trusted UI; it re-launches *itself* with a hidden `--worker`

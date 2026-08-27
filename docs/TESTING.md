@@ -10,18 +10,33 @@ Everything below runs in a plain Linux container. The core protocol code
 (vendored libvncclient + `src/core`) is portable C, so decoder correctness and
 memory safety are proven here before any Windows build exists.
 
-### Build (sanitizer gate)
+### The gate itself
+
+The Linux CI job runs two committed scripts, and nothing else:
 
 ```
-cmake --preset linux-asan
-cmake --build build/linux-asan
+bash tests/ci_linux.sh   # linux-asan: unit tests + 9-encoding cross-process matrix
+bash tests/ci_tls.sh     # linux-tls:  VeNCrypt/X509 verification against QEMU
 ```
+
+Run those to reproduce CI exactly. For build prerequisites, presets and
+troubleshooting see **[BUILDING.md](BUILDING.md)** — this file covers only what
+the tests prove and how to interpret them.
+
+`ci_linux.sh` drives the matrix through `ipc_test` → the real `vncworker` → the
+shared framebuffer, so it exercises the worker and IPC boundary, not just the
+decoders. It also runs both unit-test binaries (`audio_test`, `ftpath_test`).
 
 `linux-asan` enables AddressSanitizer + UBSan with `-fno-sanitize-recover`, so
-any memory-safety or undefined-behavior finding aborts the run. (UBSan's
-`alignment` check is scoped OFF for the vendored decoders only — they do
-unaligned word loads that are well-defined on our x86-64 targets; all other
-checks, and all checks on our own code, stay on.)
+any memory-safety or undefined-behavior finding aborts the run. UBSan's
+`alignment`, `shift` and `signed-integer-overflow` checks are scoped OFF for the
+vendored sources only (unaligned word loads in the decoders, and signed
+shift/overflow in the byte-swap macros — both well-defined on our x86-64
+targets). AddressSanitizer stays fully on for the vendored decoders, and our own
+code keeps every check.
+
+The sections below describe the same ground manually, for when you are
+investigating a failure rather than gating a change.
 
 ### Start a test server
 
@@ -96,11 +111,9 @@ compiles the vendored `tls_gnutls.c` with system GnuTLS. tls_schannel.c must
 match this behavior (it is otherwise pending Windows-host validation).
 
 ```
-# Reference TLS build (Linux; needs libgnutls28-dev)
-cmake -S . -B build/linux-tls -G Ninja -DVNC_WITH_GNUTLS=ON \
-  -DCMAKE_C_FLAGS="-fsanitize=address,undefined -g" \
-  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-cmake --build build/linux-tls --target vnctest vncworker
+# Reference TLS build (Linux; needs libgnutls28-dev + pkg-config)
+cmake --preset linux-tls
+cmake --build build/linux-tls --target vnctest
 
 # Generate a test CA + server cert (certtool from gnutls-bin), then run QEMU
 # with x509 VNC:
@@ -132,24 +145,15 @@ server offering only anonymous TLS (`-object tls-creds-anon`) is rejected, and a
 server forced to `RFB 003.003` offering `None`/`VncAuth` is rejected (no cleartext
 downgrade, no password sent).
 
-## Building on Windows
+## The Windows binary under test
 
-Pick the preset that matches your toolchain (the generator pins a toolset, so a
-mismatch gives MSB8020 "build tools ... cannot be found"):
+Build it per **[BUILDING.md](BUILDING.md)** — from an x64 Native Tools Command
+Prompt, `cmake --preset win-ninja-release && cmake --build build/win-ninja-release`,
+which is the same Ninja/Release path the Windows CI job compiles.
 
-| Visual Studio | Preset | Command |
-|---|---|---|
-| 2022 (v143) | `vs2022-x64` | `cmake --preset vs2022-x64 && cmake --build build/vs2022-x64 --config Release` |
-| 2026 (v145) | `vs2026-x64` | `cmake --preset vs2026-x64 && cmake --build build/vs2026-x64 --config Release` |
-| any version | `windows` (Ninja) | from an **x64 Native Tools Command Prompt**: `cmake --preset windows && cmake --build build/windows` |
-
-The **`windows`** (Ninja) preset is toolchain-version agnostic — it uses whatever
-`cl.exe` is on the path — so it always works from the "x64 Native Tools Command
-Prompt for VS" regardless of which VS version you have. Use it if the
-version-specific presets don't match your install.
-
-A **single** `vncviewer.exe` lands in the build's output directory (for the VS
-generators, under `<preset>/Release/`; for Ninja, directly under the build dir).
+A **single** `vncviewer.exe` lands in the build's output directory (for the Ninja
+presets, directly under the build dir; for the version-pinned Visual Studio
+presets, under `<binaryDir>/Release/`).
 That one executable is the whole product: launched normally it is the trusted UI;
 it re-launches *itself* with a hidden `--worker` flag to become the sandboxed
 decoder child, and `--headless` runs the console diagnostic client (the Linux
@@ -192,8 +196,9 @@ Common first-run signals in the log:
 
 ## Windows manual checklist (per milestone)
 
-Build with Visual Studio Enterprise 2022 (open the folder; pick the
-`vs2022-x64` preset) or `cmake --preset vs2022-x64 && cmake --build ...`.
+Build the product the way CI does: from an **x64 Native Tools Command Prompt**,
+`cmake --preset win-ninja-release && cmake --build build/win-ninja-release`
+(see [BUILDING.md](BUILDING.md)).
 
 - **M2 shell + sandbox**: connect to a QEMU VM; verify render at 16/32bpp,
   keyboard incl. shifted symbols, mouse + wheel, clean disconnect on close.
@@ -206,10 +211,11 @@ Build with Visual Studio Enterprise 2022 (open the folder; pick the
   - **CIG** (`BLOCK_NON_MICROSOFT_BINARIES`) means every DLL the worker loads
     must be Microsoft-signed. This holds today: zlib/libvncclient are vendored
     and compiled in, and the DLLs the worker actually maps are all MS-signed
-    system libraries — `ws2_32`, `advapi32`, `secur32`, `crypt32`, plus the MS
+    system libraries — `ws2_32`, `secur32`, `crypt32`, plus the MS
     CRT. (The primary EXE image itself is exempt from CIG, so the unsigned
     `vncviewer.exe` runs fine.) The **GUI** DLLs — `user32`, `gdi32`, `shell32`,
-    `comdlg32`, `userenv`, `winmm` — are **delay-loaded**, so the worker never
+    `comdlg32`, `userenv`, `winmm` — plus **`advapi32`** (SID/ACL work is
+    UI-side only) are **delay-loaded**, so the worker never
     maps them; that is also what keeps the **no-win32k** filter satisfied (loading
     `user32` would make win32k calls in its DllMain). The mode dispatch parses the
     command line itself (`cmdline_to_wargv`) precisely to avoid `CommandLineToArgvW`,
@@ -226,5 +232,16 @@ Build with Visual Studio Enterprise 2022 (open the folder; pick the
   drift.
 - **M6 VeNCrypt/X509**: TLS + certificate-verified connection to QEMU
   (`-object tls-creds-x509,...`); bad cert is rejected.
-- **M8 file drag-drop**: drag a file onto the viewer uploads to the guest (with
-  a TightVNC/UltraVNC server in the guest); server-supplied paths are sanitized.
+- **M7 polish**: default aspect-preserving scaling tracks window resizes;
+  `--stretch` fills the client area and `--scale-1to1` disables scaling;
+  fullscreen toggles with F11 / Ctrl+Alt+F (and `--fullscreen` at launch); a
+  server disconnect raises the reconnect prompt.
+- **UX**: "Resize guest to window" drives ExtendedDesktopSize; Save… writes a
+  PNG screenshot; the Alt+Space system menu sends Ctrl+Alt+Del / Ctrl+Alt+F1·F2 /
+  Ctrl+Esc and toggles fullscreen, cursor lock and disconnect; the title bar
+  shows the status line; connection recents persist across launches.
+- **M8 file drag-drop (capture only — no upload in this build)**: drop files on
+  the viewer. Expect a "File transfer" dialog reporting how many passed
+  `ft_sanitize_remote_name`, and stating that the transport is not implemented —
+  QEMU has no file channel. Nothing is sent to the guest; this checks the
+  path-traversal defense and the drop plumbing, not an upload.
