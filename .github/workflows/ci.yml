@@ -1,8 +1,13 @@
 name: CI
 
+# We work through pull requests, so PRs are the primary trigger. `push` is
+# limited to main: a same-repo PR branch would otherwise fire BOTH a push run and
+# a pull_request run for every commit, doubling the runner minutes for zero extra
+# signal. Pushing a branch without opening a PR therefore runs no CI by design —
+# open the PR to get checks.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 # Least privilege: this workflow only ever reads the repo (checkout). Without an
